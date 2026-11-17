@@ -43,4 +43,13 @@ data class PlaybackState(
     val isEnded: Boolean = false,
     /** Human-readable error of the last failed load/playback, null when fine. */
     val error: String? = null,
+    /**
+     * True for a stream still on air (a YouTube live stream). [durationMs] is then how far back it can be rewound
+     * (0 when it can't) and [positionMs] where in that stretch it plays: at or near the end, it plays what's on air
+     * (`PlayerMath.isAtLiveEdge`), and seeking to the end goes there. Neither is a place in an episode to save.
+     */
+    val isLive: Boolean = false,
 )
+
+/** Where an episode's audio plays from right now, and whether that is a stream still on air ([PlaybackState.isLive]). */
+data class LocatedMedia(val url: String, val live: Boolean = false)

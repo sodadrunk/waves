@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -32,13 +33,19 @@ import java.util.concurrent.Executor
  * controls. Create one per process (e.g. app-level singleton) from the main thread; methods may be
  * called from any thread (they hop to the main looper).
  *
+ * A live stream ([PlaybackState.isLive]) starts at what's on air and can be rewound as far back as the stream keeps:
+ * its position and length are those of that stretch, and a seek to its end goes back on air.
+ *
  * [release] only disconnects this client — an ongoing playback keeps running in the service until the
  * user pauses/dismisses it. A new instance re-attaches to it (the episode is restored from the session).
  */
 class AndroidAudioPlayer(
     context: Context,
-    /** Ordinary enclosures pass through. YouTube watch URLs become a direct audio stream. */
-    private val locate: suspend (String) -> String = { it },
+    /**
+     * Ordinary enclosures pass through. YouTube watch URLs become a direct audio stream, or for a stream on air
+     * ([LocatedMedia.live]) the HLS playlist of its audio.
+     */
+    private val locate: suspend (String) -> LocatedMedia = { LocatedMedia(it) },
 ) : AudioPlayer {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -61,6 +68,8 @@ class AndroidAudioPlayer(
     /** The [playGeneration] whose media is still being located: the old item, paused meanwhile, isn't published. */
     private var locating: Long? = null
     private var wantPlaying = false
+    /** The speed chosen for episodes, kept while a live stream plays at 1× (what's on air can't come faster). */
+    @Volatile private var episodeSpeed: Float? = null
     private var released = false
     private val ticker = PositionTicker(scope) { publish() }
 
@@ -139,7 +148,7 @@ class AndroidAudioPlayer(
                 isPlaying = true,
                 positionMs = start,
                 durationMs = PlayerMath.durationMs(null, episode),
-                speed = it.speed,
+                speed = episodeSpeed ?: it.speed,
                 isBuffering = true,
             )
         }
@@ -148,7 +157,7 @@ class AndroidAudioPlayer(
             currentPodcastTitle = podcastTitle
             locating = gen
             withController { c -> if (locating == gen) c.pause() }
-            val mediaUrl = try {
+            val media = try {
                 locate(episode.audioUrl)
             } catch (e: CancellationException) {
                 throw e
@@ -164,8 +173,11 @@ class AndroidAudioPlayer(
             withController { c ->
                 if (gen != playGeneration) return@withController
                 locating = null
-                c.setMediaItem(mediaItemOf(episode, podcastTitle, mediaUrl), start)
-                c.setPlaybackSpeed(_state.value.speed)
+                // A live stream starts at its default position, what's on air.
+                c.setMediaItem(mediaItemOf(episode, podcastTitle, media.url, media.live), if (media.live) C.TIME_UNSET else start)
+                val speed = episodeSpeed ?: _state.value.speed
+                episodeSpeed = speed.takeIf { media.live }
+                c.setPlaybackSpeed(if (media.live) 1f else speed)
                 c.prepare()
                 if (wantPlaying) c.play()
             }
@@ -189,7 +201,13 @@ class AndroidAudioPlayer(
                 val position = if (_state.value.isEnded) 0 else _state.value.positionMs
                 load(episode, position, currentPodcastTitle)
             } else {
-                if (c.playbackState == Player.STATE_ENDED) c.seekTo(0)
+                val live = c.currentMediaItem?.let(::isLive) == true
+                when {
+                    // A live stream that failed or ended goes back to what's on air; one just paused carries on
+                    // where it was (the service takes it on air itself if the stream no longer holds that).
+                    live -> if (c.playbackState == Player.STATE_IDLE || c.playbackState == Player.STATE_ENDED) c.seekToDefaultPosition()
+                    c.playbackState == Player.STATE_ENDED -> c.seekTo(0)
+                }
                 if (c.playbackState == Player.STATE_IDLE) c.prepare() // after an error: retry
                 c.play()
             }
@@ -197,13 +215,22 @@ class AndroidAudioPlayer(
     }
 
     override fun seekTo(positionMs: Long) {
-        val target = PlayerMath.clampSeek(positionMs, _state.value.durationMs)
-        _state.update { it.copy(positionMs = target, isEnded = false) }
-        withController { it.seekTo(target) }
+        val current = _state.value
+        val target = PlayerMath.clampSeek(positionMs, current.durationMs)
+        // The end of a live stream is what's on air: the player picks how close to the newest audio it can play.
+        val onAir = current.isLive && PlayerMath.seeksOnAir(target, current.positionMs, current.durationMs)
+        // Already on air (a skip forward there): nothing to seek to.
+        if (onAir && PlayerMath.isAtLiveEdge(current.positionMs, current.durationMs) && !current.isEnded) return
+        _state.update { it.copy(positionMs = if (onAir) it.durationMs else target, isEnded = false) }
+        withController { if (onAir) it.seekToDefaultPosition() else it.seekTo(target) }
     }
 
     override fun setSpeed(speed: Float) {
         val clamped = PlayerMath.clampSpeed(speed)
+        if (_state.value.isLive) {
+            episodeSpeed = clamped // for the next episode; the stream stays at 1×
+            return
+        }
         _state.update { it.copy(speed = clamped) }
         withController { it.setPlaybackSpeed(clamped) }
     }
@@ -237,7 +264,10 @@ class AndroidAudioPlayer(
         val episode = currentEpisode
         val error = c.playerError
         val flags = AndroidStateMapping.flags(c.playbackState, c.playWhenReady, error != null)
-        val duration = PlayerMath.durationMs(AndroidStateMapping.durationOrNull(c.duration), episode)
+        // A live stream's length is the stretch it can be rewound over, not the feed's hint of an episode's.
+        val live = c.currentMediaItem?.let(::isLive) == true
+        val duration = if (live) AndroidStateMapping.durationOrNull(c.duration) ?: 0 else
+            PlayerMath.durationMs(AndroidStateMapping.durationOrNull(c.duration), episode)
         val position = if (flags.isEnded) duration else c.currentPosition
         _state.value = PlaybackState(
             episode = episode,
@@ -248,6 +278,7 @@ class AndroidAudioPlayer(
             isBuffering = flags.isBuffering,
             isEnded = flags.isEnded,
             error = error?.let { it.message ?: it.errorCodeName },
+            isLive = live,
         )
         ticker.setRunning(flags.isPlaying)
     }
@@ -260,9 +291,10 @@ class AndroidAudioPlayer(
 
     internal companion object {
         const val EXTRA_EPISODE_JSON = "io.waves.episode"
+        const val EXTRA_LIVE = "io.waves.live"
         val json = Json { ignoreUnknownKeys = true }
 
-        fun mediaItemOf(episode: Episode, podcastTitle: String?, mediaUrl: String = episode.audioUrl): MediaItem {
+        fun mediaItemOf(episode: Episode, podcastTitle: String?, mediaUrl: String = episode.audioUrl, live: Boolean = false): MediaItem {
             val artist = podcastTitle ?: PlayerMath.fallbackArtist(episode.podcastFeedUrl)
             val metadata = MediaMetadata.Builder()
                 .setTitle(episode.title)
@@ -272,7 +304,12 @@ class AndroidAudioPlayer(
                 .setIsPlayable(true)
                 .setIsBrowsable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_PODCAST_EPISODE)
-                .setExtras(Bundle().apply { putString(EXTRA_EPISODE_JSON, json.encodeToString(Episode.serializer(), episode)) })
+                .setExtras(
+                    Bundle().apply {
+                        putString(EXTRA_EPISODE_JSON, json.encodeToString(Episode.serializer(), episode))
+                        putBoolean(EXTRA_LIVE, live)
+                    },
+                )
                 .build()
             return MediaItem.Builder()
                 .setMediaId(episode.id.toString())
@@ -282,6 +319,9 @@ class AndroidAudioPlayer(
                 .setMediaMetadata(metadata)
                 .build()
         }
+
+        /** Whether [item] was loaded as a stream on air; the service keeps it, so a new instance still knows. */
+        internal fun isLive(item: MediaItem): Boolean = item.mediaMetadata.extras?.getBoolean(EXTRA_LIVE) == true
 
         internal fun episodeOf(item: MediaItem): Episode? = item.mediaMetadata.extras?.getString(EXTRA_EPISODE_JSON)?.let {
             runCatching { json.decodeFromString(Episode.serializer(), it) }.getOrNull()

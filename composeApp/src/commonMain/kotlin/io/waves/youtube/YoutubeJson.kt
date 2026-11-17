@@ -1,6 +1,7 @@
 package io.waves.youtube
 
 import io.ktor.client.HttpClient
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -13,6 +14,7 @@ import io.ktor.http.isSuccess
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 
 internal val youtubeJson = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -29,6 +31,9 @@ internal suspend fun HttpClient.postJson(url: String, body: String, userAgent: S
     return response.bodyOrThrow()
 }
 
+internal suspend fun HttpClient.getText(url: String, userAgent: String): String =
+    get(url) { header(HttpHeaders.UserAgent, userAgent) }.bodyOrThrow()
+
 private suspend fun HttpResponse.bodyOrThrow(): String {
     val text = bodyAsText()
     if (!status.isSuccess()) throw YoutubeException("YouTube returned HTTP ${status.value}")
@@ -44,3 +49,5 @@ internal fun JsonObject.string(key: String): String? =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }
 
 internal fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
+
+internal fun JsonObject.boolean(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull

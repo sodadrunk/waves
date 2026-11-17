@@ -315,7 +315,9 @@ class PlaybackCacheController(
             .setCacheWriteDataSinkFactory(null)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or CacheDataSource.FLAG_BLOCK_ON_CACHE)
         val sources = RemoteCachingDataSource.Factory(caching, readOnly, upstream, PlaybackCacheBridge.claims)
-        mediaSourceFactory = HlsTolerantMediaSourceFactory(DefaultMediaSourceFactory(sources), sources)
+        // HLS (a live stream, or one just ended) goes around the cache: its playlist has to be read afresh each time,
+        // and its pieces, each under its own address, would pile up under no episode's key, never to be cleared.
+        mediaSourceFactory = HlsTolerantMediaSourceFactory(DefaultMediaSourceFactory(sources), upstream)
         scope.launch {
             for (episode in reports) {
                 try {

@@ -10,6 +10,7 @@ import io.waves.download.DownloadAwareAudioPlayer
 import io.waves.download.createDownloadManager
 import io.waves.download.explicitAudioExtension
 import io.waves.player.DesktopAudioPlayer
+import io.waves.player.LocatedMedia
 import io.waves.player.RedirectResolver
 import io.waves.player.Mp4Header
 import io.waves.player.StreamRelay
@@ -38,14 +39,14 @@ fun createDesktopAppGraph(quitApp: () -> Unit): AppGraph {
     val driver = createDesktopDriver(defaultDatabaseFile())
     val library = SqlLibraryRepository(driver)
     val settings = SqlSettingsStore(driver)
-    val locate = YoutubeMediaLocator(
+    val locator = YoutubeMediaLocator(
         http,
         fallbacks = listOf(YtDlpSource()),
-    )::locate
+    )
     // Downloads keep their own client (no request timeout for large files, identity encoding, no cache).
     val downloads = createDownloadManager(
         library,
-        locate = locate,
+        locate = locator::locate,
         // Caching while listening completes what the relay streams and keeps that file: one download, from where it
         // plays.
         fillPlayerCacheAsFile = { episode, _, dest -> StreamRelay.completeTo(episode.audioUrl, File(dest)) },
@@ -60,21 +61,27 @@ fun createDesktopAppGraph(quitApp: () -> Unit): AppGraph {
                 // The relay serves an ordinary enclosure only a little past where it plays.
                 onProgress = StreamRelay::reportPlayback,
             ) { url ->
-                val located = locate(url)
-                when {
-                    // Downloads and the playback cache: YouTube's audio needs the same header fix as the relay applies.
-                    url.startsWith("file:") -> url.also { runCatching { Mp4Header.clearFragmentedDurations(File(URI(url))) } }
-                    // An ordinary enclosure, past its tracking redirects (fetched in chunks, every one through
-                    // podtrac and the like would count as a download): through the relay, fetched in chunks from
-                    // where the player reads; straight from the server when it can't be relayed.
-                    located == url -> RedirectResolver.resolve(url).let { final ->
-                        val extension = explicitAudioExtension(final) ?: explicitAudioExtension(url)
-                        extension?.let { StreamRelay.relayOrNull(final, it, episode = url) } ?: final
-                    }
-                    // A resolved YouTube stream without a file extension: JavaFX needs one to play it.
-                    explicitAudioExtension(located) == null -> StreamRelay.url(located, episode = url)
-                    else -> located
-                }
+                val media = locator.locateMedia(url)
+                // A stream on air: an HLS playlist, which JavaFX plays as it is.
+                if (media.live) return@DesktopAudioPlayer media
+                val located = media.url
+                LocatedMedia(
+                    when {
+                        // Downloads and the playback cache: YouTube's audio needs the same header fix as the relay
+                        // applies.
+                        url.startsWith("file:") -> url.also { runCatching { Mp4Header.clearFragmentedDurations(File(URI(url))) } }
+                        // An ordinary enclosure, past its tracking redirects (fetched in chunks, every one through
+                        // podtrac and the like would count as a download): through the relay, fetched in chunks from
+                        // where the player reads; straight from the server when it can't be relayed.
+                        located == url -> RedirectResolver.resolve(url).let { final ->
+                            val extension = explicitAudioExtension(final) ?: explicitAudioExtension(url)
+                            extension?.let { StreamRelay.relayOrNull(final, it, episode = url) } ?: final
+                        }
+                        // A resolved YouTube stream without a file extension: JavaFX needs one to play it.
+                        explicitAudioExtension(located) == null -> StreamRelay.url(located, episode = url)
+                        else -> located
+                    },
+                )
             },
             downloads,
         ),

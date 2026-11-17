@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -73,6 +74,14 @@ class PlaybackService : MediaSessionService() {
             .setSeekForwardIncrementMs(30_000)
             .build()
         caching?.attachTo(player)
+        // A live stream paused or rewound until the stream no longer holds that point: carry on with what's on air.
+        player.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                if (error.errorCode != PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) return
+                player.seekToDefaultPosition()
+                player.prepare()
+            }
+        })
 
         val builder = MediaSession.Builder(this, player)
             .setCallback(SkipCallback())

@@ -39,6 +39,7 @@ import kotlinx.coroutines.sync.withLock
  * - saves progress every [saveIntervalMs] while playing, and on pause / stop / episode switch,
  * - marks episodes completed when the player reports the end, within 30s of the end, or past 95%,
  * - marks episodes complete or not when the user says so ([setCompleted]),
+ * - saves none of that for a live stream ([PlaybackState.isLive]), which only gets its history entry,
  * - records a [HistoryEntry] whenever playback of an episode starts,
  * - calls [onLocalChange] after each of those writes,
  * - applies [settings]: the player starts at (and follows changes of) `defaultSpeed`; [skipBack] / [skipForward]
@@ -379,6 +380,8 @@ class PlaybackController(
 
     private suspend fun save(s: PlaybackState) {
         val episode = s.episode ?: return
+        // A stream on air has no position to come back to and no end to reach.
+        if (s.isLive) return
         val durationMs = when {
             s.durationMs > 0 -> s.durationMs
             else -> (episode.durationSeconds ?: 0L) * 1000

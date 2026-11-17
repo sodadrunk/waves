@@ -66,6 +66,17 @@ class PlaybackCacheTest {
         assertEquals(listOf(ep.id), recorder.cached)
     }
 
+    @Test fun aLiveStreamIsNeverCached() = runTest {
+        val (state, recorder) = setup()
+        val ep = episode("live")
+        // The player says it's live once it has found the stream, a moment after it shows as playing.
+        state.value = PlaybackState(ep, isPlaying = true)
+        advanceTimeBy(5_000)
+        state.value = PlaybackState(ep, isPlaying = true, isLive = true)
+        advanceTimeBy(10 * 60_000)
+        assertEquals(emptyList(), recorder.cached)
+    }
+
     @Test fun shortListensToAnotherEpisodeDontCacheIt() = runTest {
         val (state, recorder) = setup()
         state.value = PlaybackState(episode("a"), isPlaying = true)

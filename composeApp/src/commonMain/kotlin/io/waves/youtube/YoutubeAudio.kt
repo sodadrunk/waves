@@ -1,7 +1,10 @@
 package io.waves.youtube
 
 import io.waves.net.ResponseCache
+import io.waves.player.LocatedMedia
 import io.ktor.client.HttpClient
+import io.waves.currentTimeMillis
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
@@ -17,6 +20,9 @@ import kotlinx.serialization.json.putJsonObject
  * and WebM/Opus are skipped. Stream URLs expire, so this runs at play and download time; the library
  * keeps the watch URL.
  *
+ * A stream on air right now has no file: it resolves to an HLS playlist of its audio ([LocatedMedia.live]), which
+ * plays but can't be downloaded.
+ *
  * YouTube sometimes answers the player call with a sign-in check instead of a stream (common on
  * datacenter and corporate networks). Then each of [fallbacks] is tried in order; when none can help it
  * becomes a normal playback error — the episode stays in the list like any other show.
@@ -24,18 +30,27 @@ import kotlinx.serialization.json.putJsonObject
 class YoutubeMediaLocator(
     private val client: HttpClient,
     private val fallbacks: List<YoutubeAudioSource> = emptyList(),
+    private val clock: () -> Long = ::currentTimeMillis,
 ) {
+    /** The audio to download or cache for [url]: a recording's. A stream still on air has none to keep, and throws. */
     suspend fun locate(url: String): String {
-        val videoId = YoutubeUrls.videoId(url) ?: return url
+        val media = locateMedia(url)
+        if (media.live) throw YoutubeException("A live stream can't be downloaded while it's on air.", live = true)
+        return media.url
+    }
+
+    /** The audio to play for [url], a live stream's included. */
+    suspend fun locateMedia(url: String): LocatedMedia {
+        val videoId = YoutubeUrls.videoId(url) ?: return LocatedMedia(url)
         val builtIn = try {
-            return YoutubeAudio.streamUrl(client, videoId)
+            return YoutubeAudio.media(client, videoId, clock)
         } catch (e: YoutubeException) {
             e
         }
         var lastFailure: Exception? = null
         for (source in fallbacks) {
             try {
-                source.streamUrl(videoId)?.let { return it }
+                source.streamUrl(videoId)?.let { return LocatedMedia(it, live = builtIn.live || isOnAir(it)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -43,7 +58,23 @@ class YoutubeMediaLocator(
             }
         }
         val message = listOfNotNull(builtIn.message, lastFailure?.message).filter { it.isNotBlank() }.joinToString(" ")
-        throw YoutubeException(message, lastFailure ?: builtIn)
+        throw YoutubeException(message, lastFailure ?: builtIn, live = builtIn.live)
+    }
+
+    /**
+     * Whether the address a fallback found is a stream on air, when YouTube itself never said (every built-in client
+     * was turned away): an HLS playlist whose newest piece is from just now. A recording's, or an ended stream's, isn't.
+     */
+    private suspend fun isOnAir(url: String): Boolean {
+        if (!url.substringBefore('?').endsWith(".m3u8")) return false
+        val text = try {
+            client.getText(url, WEB_USER_AGENT)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return false
+        }
+        return HlsMaster.isOnAir(text, clock())
     }
 }
 
@@ -53,42 +84,114 @@ fun interface YoutubeAudioSource {
 }
 
 object YoutubeAudio {
+    /** [media]'s address. */
+    suspend fun streamUrl(client: HttpClient, videoId: String): String = media(client, videoId).url
+
     /**
      * The video's audio stream address, kept for an hour ([ResponseCache]; YouTube's expire after about six), and never
-     * an expired one in place of a failure.
+     * an expired one in place of a failure. A live stream's is kept for [LIVE_KEPT_MS] only: it ends without notice,
+     * and from then on the video is a recording, with an address of its own.
      */
-    suspend fun streamUrl(client: HttpClient, videoId: String): String {
+    suspend fun media(client: HttpClient, videoId: String, clock: () -> Long = ::currentTimeMillis): LocatedMedia {
         if (!YoutubeUrls.isVideoId(videoId)) throw YoutubeException("That isn't a YouTube video")
-        return ResponseCache.text("youtube stream $videoId", 1.hours, staleOnError = false) { findStream(client, videoId) }
+        val key = "youtube stream $videoId"
+        val find: suspend () -> String = {
+            findStream(client, videoId).let { if (it.live) "$LIVE_MARK${clock()} ${it.url}" else it.url }
+        }
+        var kept = ResponseCache.text(key, 1.hours, staleOnError = false, fetch = find)
+        if (kept.startsWith(LIVE_MARK)) {
+            val foundAt = kept.removePrefix(LIVE_MARK).substringBefore(' ').toLongOrNull() ?: 0
+            if (clock() - foundAt !in 0 until LIVE_KEPT_MS) kept = ResponseCache.text(key, Duration.ZERO, staleOnError = false, fetch = find)
+        }
+        return if (kept.startsWith(LIVE_MARK)) LocatedMedia(kept.removePrefix(LIVE_MARK).substringAfter(' '), live = true) else LocatedMedia(kept)
     }
 
-    private suspend fun findStream(client: HttpClient, videoId: String): String {
+    private suspend fun findStream(client: HttpClient, videoId: String): LocatedMedia {
         var failure: AudioChoice.Unavailable? = null
+        var live = false
+        var signInWall = false
         for (spec in clients) {
+            // An IP-level sign-in wall rejects every client that comes as a stranger; don't wait on the rest of those.
+            if (signInWall && !spec.asVisitor) continue
+            val visitor = if (spec.asVisitor) visitorData(client, spec) ?: continue else null
             val text = try {
-                client.postJson(
-                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-                    spec.body(videoId),
-                    spec.userAgent,
-                    mapOf(
-                        "X-YouTube-Client-Name" to spec.clientId,
-                        "X-YouTube-Client-Version" to spec.version,
-                    ),
-                )
+                client.player(spec, videoId, visitor)
             } catch (e: YoutubeException) {
-                failure = AudioChoice.Unavailable(null, e.message)
+                if (failure?.status == null) failure = AudioChoice.Unavailable(null, e.message)
                 continue
             }
             when (val choice = interpret(text)) {
-                is AudioChoice.Stream -> return choice.url
+                is AudioChoice.Stream -> return LocatedMedia(choice.url)
+                is AudioChoice.Live -> return LocatedMedia(liveAudio(client, videoId, spec, choice.manifestUrl), live = true)
                 is AudioChoice.Unavailable -> {
                     failure = choice
-                    // An IP-level sign-in wall rejects every client; don't wait on the rest.
-                    if (choice.status == "LOGIN_REQUIRED") break
+                    live = live || choice.live
+                    if (choice.status == "LOGIN_REQUIRED") signInWall = true
                 }
             }
         }
-        throw YoutubeException(audioFailureMessage(failure))
+        throw YoutubeException(audioFailureMessage(failure), live = live)
+    }
+
+    private suspend fun HttpClient.player(spec: Client, videoId: String, visitor: String?): String = postJson(
+        "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+        spec.body(videoId, visitor),
+        spec.userAgent,
+        buildMap {
+            put("X-YouTube-Client-Name", spec.clientId)
+            put("X-YouTube-Client-Version", spec.version)
+            if (visitor != null) put("X-Goog-Visitor-Id", visitor)
+        },
+    )
+
+    /**
+     * The id YouTube hands a new visitor, which a client can then call the player with: that passes where a stranger
+     * is asked to sign in. Kept for six hours; null when YouTube won't give one.
+     */
+    private suspend fun visitorData(client: HttpClient, spec: Client): String? = try {
+        ResponseCache.text("youtube visitor ${spec.name}", 6.hours) {
+            val text = client.postJson(
+                "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false",
+                spec.body(videoId = null, visitor = null),
+                spec.userAgent,
+                mapOf("X-YouTube-Client-Name" to spec.clientId, "X-YouTube-Client-Version" to spec.version),
+            )
+            jsonObject(text)?.obj("responseContext")?.string("visitorData") ?: throw YoutubeException("YouTube gave no visitor id")
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * The playlist to play of a live stream whose renditions [manifestUrl] (from [spec]'s answer) lists: its audio
+     * alone when it's offered, which only the visitor client's list does; otherwise the smallest video, whose sound
+     * plays just the same at a few times the data. The list itself when it can't be read (a player picks from it).
+     */
+    private suspend fun liveAudio(client: HttpClient, videoId: String, spec: Client, manifestUrl: String): String {
+        val visitorMaster = clients.firstOrNull { it.asVisitor }?.takeIf { it != spec }?.let { other ->
+            val visitor = visitorData(client, other) ?: return@let null
+            val answer = quietly { client.player(other, videoId, visitor) } ?: return@let null
+            (interpret(answer) as? AudioChoice.Live)?.let { it.manifestUrl to other }
+        }
+        // Read one at a time: the visitor client's list has the audio, and then the other is never needed.
+        val read = ArrayList<Pair<String, String>>()
+        for ((url, from) in listOfNotNull(visitorMaster, manifestUrl to spec)) {
+            val text = quietly { client.getText(url, from.userAgent) } ?: continue
+            HlsMaster.audioOnly(text, url)?.let { return it }
+            read += url to text
+        }
+        return read.firstNotNullOfOrNull { (url, text) -> HlsMaster.lowestVariant(text, url) } ?: manifestUrl
+    }
+
+    /** [block]'s answer, or null when the request fails: there's another way to try. */
+    private suspend fun quietly(block: suspend () -> String): String? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
     }
 
     internal fun interpret(json: String): AudioChoice {
@@ -97,6 +200,12 @@ object YoutubeAudio {
         val status = playability?.string("status")
         val reason = playability?.string("reason")
         val streaming = root.obj("streamingData")
+        // On air: its audio formats are pieces to stitch (their addresses aren't files), so only the HLS list plays.
+        if (root.obj("videoDetails")?.boolean("isLive") == true) {
+            streaming?.string("hlsManifestUrl")?.takeIf { it.startsWith("https://") }?.let { return AudioChoice.Live(it) }
+            val why = reason.takeIf { status != null && status != "OK" } ?: "This live stream can't be played as audio right now."
+            return AudioChoice.Unavailable(status, why, live = true)
+        }
         val formats = buildList {
             (streaming?.get("adaptiveFormats") as? JsonArray)?.let { addAll(it) }
             (streaming?.get("formats") as? JsonArray)?.let { addAll(it) }
@@ -126,8 +235,11 @@ object YoutubeAudio {
         val clientId: String,
         val userAgent: String,
         val extra: JsonObject,
+        /** Calls with a visitor id fetched first ([visitorData]): one more request, but it isn't asked to sign in. */
+        val asVisitor: Boolean = false,
     ) {
-        fun body(videoId: String) = buildJsonObject {
+        /** The player call's body for [videoId]; without one, just the client (what the visitor id call sends). */
+        fun body(videoId: String?, visitor: String?) = buildJsonObject {
             putJsonObject("context") {
                 putJsonObject("client") {
                     put("clientName", name)
@@ -136,11 +248,14 @@ object YoutubeAudio {
                     put("hl", "en")
                     put("gl", "US")
                     extra.forEach { (k, v) -> put(k, v) }
+                    if (visitor != null) put("visitorData", visitor)
                 }
             }
-            put("videoId", videoId)
-            put("contentCheckOk", true)
-            put("racyCheckOk", true)
+            if (videoId != null) {
+                put("videoId", videoId)
+                put("contentCheckOk", true)
+                put("racyCheckOk", true)
+            }
         }.toString()
     }
 
@@ -169,10 +284,35 @@ object YoutubeAudio {
                 put("osVersion", "11")
             },
         ),
+        // Last, as it takes a request more: it gets through the sign-in wall the others hit on some networks, and its
+        // live streams come with their audio on its own.
+        Client(
+            name = "VISIONOS",
+            version = "1.02",
+            clientId = "101",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            extra = buildJsonObject {
+                put("deviceMake", "Apple")
+                put("deviceModel", "RealityDevice17,1")
+                put("osName", "visionOS")
+                put("osVersion", "26.5.23O471")
+            },
+            asVisitor = true,
+        ),
     )
+
+    /** Marks a kept address as a live stream's; the time it was found (epoch ms) and a space follow, then the address. */
+    private const val LIVE_MARK = "live "
+
+    /** How long a live stream's address is reused before YouTube is asked whether it's still on air. */
+    private const val LIVE_KEPT_MS = 2 * 60_000L
 }
 
 internal sealed interface AudioChoice {
     data class Stream(val url: String) : AudioChoice
-    data class Unavailable(val status: String?, val reason: String?) : AudioChoice
+
+    /** A stream on air: [manifestUrl] is the HLS master playlist of its renditions. */
+    data class Live(val manifestUrl: String) : AudioChoice
+
+    data class Unavailable(val status: String?, val reason: String?, val live: Boolean = false) : AudioChoice
 }

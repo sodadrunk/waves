@@ -21,8 +21,9 @@ import kotlin.time.Duration.Companion.minutes
 /**
  * Caches whatever is being listened to: once an episode has been playing for [after] in total (pauses don't reset
  * the count), its whole file is cached through [DownloadManager.cache], so seeking and later plays don't depend on
- * the network. Cached files nobody played for [keepFor] are evicted, at start and then every [evictEvery],
- * but only while [enabled] is true (offline mode turns it off, so cached audio stays until the user removes it).
+ * the network (not a live stream, which has no file). Cached files nobody played for [keepFor] are evicted, at start
+ * and then every [evictEvery], but only while [enabled] is true (offline mode turns it off, so cached audio stays
+ * until the user removes it).
  */
 class PlaybackCache(
     private val playback: Flow<PlaybackState>,
@@ -48,9 +49,10 @@ class PlaybackCache(
             }
         }
         playback
-            .distinctUntilChanged { a, b -> a.episode?.id == b.episode?.id && a.isPlaying == b.isPlaying }
+            .distinctUntilChanged { a, b -> a.episode?.id == b.episode?.id && a.isPlaying == b.isPlaying && a.isLive == b.isLive }
             .collectLatest { state ->
-                val episode = state.episode?.takeIf { state.isPlaying } ?: return@collectLatest
+                // A live stream has no file to cache.
+                val episode = state.episode?.takeIf { state.isPlaying && !state.isLive } ?: return@collectLatest
                 val id = episode.id
                 val before = listened[id] ?: 0L
                 val target = after.inWholeMilliseconds

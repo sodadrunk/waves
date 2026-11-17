@@ -29,13 +29,13 @@ fun createAndroidAppGraph(context: Context): AppGraph {
     val http = HttpClient(Android) { wavesDefaults(FileStorage(cacheDir)) }
     val library = createLibraryRepository(appContext)
     val settings = SqlSettingsStore(library.driver)
-    val locate = YoutubeMediaLocator(
+    val locator = YoutubeMediaLocator(
         http,
         fallbacks = listOf(YtDlpAndroidSource(appContext)),
-    )::locate
+    )
     // Created early: DownloadWorkers rescheduled after process death wait for this instance.
     // Downloads keep their own client (no request timeout for large files, identity encoding, no cache).
-    val downloads = createDownloadManager(appContext, library, locate)
+    val downloads = createDownloadManager(appContext, library, locator::locate)
     val playbackCache = SqlPlaybackCache(library.driver) { id, audioUrl ->
         PlaybackCacheBridge.removeResource(id, audioUrl)
     }
@@ -45,7 +45,7 @@ fun createAndroidAppGraph(context: Context): AppGraph {
         http = http,
         library = library,
         downloads = downloads,
-        player = DownloadAwareAudioPlayer(AndroidAudioPlayer(appContext, locate), downloads),
+        player = DownloadAwareAudioPlayer(AndroidAudioPlayer(appContext, locator::locateMedia), downloads),
         auth = AndroidGoogleAuth(appContext, http),
         appScope = appScope,
         updateInstaller = AndroidUpdateInstaller(appContext),

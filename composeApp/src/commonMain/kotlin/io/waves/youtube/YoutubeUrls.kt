@@ -223,4 +223,5 @@ object YoutubeUrls {
     private val uploadsListPattern = Regex("""UU(?:[A-Z]{2})?([0-9A-Za-z_-]{22})""")
 }
 
-class YoutubeException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/** [live]: the video is a stream on air right now (known even when its audio couldn't be found). */
+class YoutubeException(message: String, cause: Throwable? = null, val live: Boolean = false) : Exception(message, cause)

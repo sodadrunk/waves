@@ -9,6 +9,7 @@ import io.waves.ui.fake.InMemoryLibraryRepository
 import io.waves.ui.fake.InMemorySettingsStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -263,6 +264,23 @@ class PlaybackControllerTest {
         controller().play(ep, podcastA)
         runCurrent()
         assertEquals(0L, player.playCalls.single().second)
+    }
+
+    @Test
+    fun aLiveStreamGetsHistoryButNoSavedPosition() = runTest {
+        val ep = episode(podcastA, 1)
+        val c = controller()
+        c.play(ep, podcastA)
+        runCurrent()
+        player.mutableState.update { it.copy(isLive = true, positionMs = 0, durationMs = 0) }
+        advanceTimeBy(10_001)
+        c.pause()
+        runCurrent()
+        player.mutableState.update { it.copy(isEnded = true) }
+        runCurrent()
+
+        assertNull(library.progress(ep.id).first())
+        assertEquals(listOf(ep.id), library.history.first().map { it.episodeId })
     }
 
     @Test

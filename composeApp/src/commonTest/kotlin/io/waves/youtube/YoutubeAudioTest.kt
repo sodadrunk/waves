@@ -6,6 +6,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.waves.player.LocatedMedia
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -83,6 +84,119 @@ class YoutubeAudioTest {
         )
         val e2 = assertFailsWith<YoutubeException> { failing.locate(YoutubeUrls.watchUrl(VIDEO)) }
         assertTrue(e2.message!!.endsWith("yt-dlp: Sign in to confirm you’re not a bot."), e2.message)
+    }
+
+    @Test
+    fun aStreamOnAirIsItsHlsListNotItsAudioFormats() {
+        // A live stream's audio formats carry addresses too, but of pieces, not of a file.
+        val choice = YoutubeAudio.interpret(
+            """
+            {"playabilityStatus":{"status":"OK"},"videoDetails":{"isLive":true},"streamingData":{
+              "hlsManifestUrl":"https://manifest.googlevideo.com/master.m3u8",
+              "adaptiveFormats":[{"mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":144000,"url":"https://rr.googlevideo.com/videoplayback?id=pieces"}]}}
+            """.trimIndent(),
+        )
+        assertEquals("https://manifest.googlevideo.com/master.m3u8", assertIs<AudioChoice.Live>(choice).manifestUrl)
+
+        val noList = assertIs<AudioChoice.Unavailable>(
+            YoutubeAudio.interpret("""{"playabilityStatus":{"status":"OK"},"videoDetails":{"isLive":true},"streamingData":{}}"""),
+        )
+        assertTrue(noList.live)
+        assertEquals("This live stream can't be played as audio right now.", YoutubeAudio.audioFailureMessage(noList))
+    }
+
+    @Test
+    fun aLiveStreamPlaysItsAudioAloneFromTheVisitorClientsList() = runTest {
+        val locator = YoutubeMediaLocator(youtube(live = true))
+        val media = locator.locateMedia(YoutubeUrls.watchUrl(VIDEO))
+        assertTrue(media.live)
+        assertEquals("https://manifest.googlevideo.com/audio-234.m3u8", media.url)
+        assertEquals(listOf("/master-audio.m3u8"), mastersRead, "the list with the audio is all that's read")
+        // Nothing of it to keep as a file.
+        val e = assertFailsWith<YoutubeException> { locator.locate(YoutubeUrls.watchUrl(VIDEO)) }
+        assertTrue(e.live)
+        assertTrue(e.message!!.contains("live stream"), e.message)
+    }
+
+    @Test
+    fun aFallbacksStreamOnAirIsLiveThoughYoutubeNeverSaidSo() = runTest {
+        // Every built-in client is asked to sign in, so nothing says the video is live; the fallback's playlist does.
+        val now = kotlinx.datetime.Instant.parse("2026-11-16T15:00:00Z").toEpochMilliseconds()
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    val path = request.url.encodedPath
+                    val body = when {
+                        path.endsWith("/onair/index.m3u8") -> "#EXTM3U\n#EXT-X-PROGRAM-DATE-TIME:2026-11-16T14:59:30.000+00:00\n#EXTINF:5.0,\nhttps://cdn.example/1\n#EXTINF:5.0,\nhttps://cdn.example/2\n"
+                        path.endsWith("/ended/index.m3u8") -> "#EXTM3U\n#EXT-X-PROGRAM-DATE-TIME:2026-11-16T12:00:00.000+00:00\n#EXTINF:5.0,\nhttps://cdn.example/1\n"
+                        else -> """{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Sign in to confirm you’re not a bot"}}"""
+                    }
+                    respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+                }
+            }
+        }
+        fun locator(found: String) = YoutubeMediaLocator(client, listOf(YoutubeAudioSource { found }), clock = { now })
+        val watch = YoutubeUrls.watchUrl(VIDEO)
+        assertTrue(locator("https://manifest.example/onair/index.m3u8").locateMedia(watch).live)
+        assertTrue(!locator("https://manifest.example/ended/index.m3u8").locateMedia(watch).live)
+        assertTrue(!locator("https://rr.example/videoplayback?id=aac").locateMedia(watch).live)
+    }
+
+    @Test
+    fun aLiveStreamWithoutAudioOnItsOwnPlaysItsSmallestVideo() = runTest {
+        val media = YoutubeMediaLocator(youtube(live = true, visitorId = false)).locateMedia(YoutubeUrls.watchUrl(VIDEO))
+        assertTrue(media.live)
+        assertEquals("https://manifest.googlevideo.com/video-91.m3u8", media.url)
+    }
+
+    @Test
+    fun theVisitorClientGetsPastTheSignInWall() = runTest {
+        val media = YoutubeMediaLocator(youtube(live = false)).locateMedia(YoutubeUrls.watchUrl(VIDEO))
+        assertEquals(LocatedMedia("https://rr.googlevideo.com/videoplayback?id=aac"), media)
+    }
+
+    /**
+     * YouTube as it answers on a walled network: strangers are asked to sign in (for a live stream, the first gets a
+     * list of video only), a client with a visitor id gets the audio.
+     */
+    private val mastersRead = mutableListOf<String>()
+
+    private fun youtube(live: Boolean, visitorId: Boolean = true) = HttpClient(MockEngine) {
+        engine {
+            addHandler { request ->
+                val body = (request.body as? io.ktor.http.content.TextContent)?.text
+                val path = request.url.encodedPath
+                if (path.endsWith(".m3u8")) mastersRead += path
+                val json = when {
+                    path.endsWith("/visitor_id") -> if (visitorId) """{"responseContext":{"visitorData":"VISITOR"}}""" else "{}"
+                    path.endsWith("/player") && live && "VISITOR" in body.orEmpty() ->
+                        """{"playabilityStatus":{"status":"OK"},"videoDetails":{"isLive":true},"streamingData":{"hlsManifestUrl":"https://manifest.googlevideo.com/master-audio.m3u8"}}"""
+                    path.endsWith("/player") && live && "ANDROID_VR" in body.orEmpty() ->
+                        """{"playabilityStatus":{"status":"OK"},"videoDetails":{"isLive":true},"streamingData":{"hlsManifestUrl":"https://manifest.googlevideo.com/master-video.m3u8"}}"""
+                    path.endsWith("/player") && "VISITOR" in body.orEmpty() ->
+                        """{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/mp4","bitrate":1,"url":"https://rr.googlevideo.com/videoplayback?id=aac"}]}}"""
+                    path.endsWith("/player") -> """{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Sign in to confirm you’re not a bot"}}"""
+                    path.endsWith("/master-audio.m3u8") -> """
+                        #EXTM3U
+                        #EXT-X-MEDIA:URI="https://manifest.googlevideo.com/audio-233.m3u8",TYPE=AUDIO,GROUP-ID="233"
+                        #EXT-X-MEDIA:URI="https://manifest.googlevideo.com/audio-234.m3u8",TYPE=AUDIO,GROUP-ID="234"
+                        #EXT-X-STREAM-INF:BANDWIDTH=269034,CODECS="avc1.42C00B,mp4a.40.5",AUDIO="233"
+                        https://manifest.googlevideo.com/video-269.m3u8
+                        #EXT-X-STREAM-INF:BANDWIDTH=962461,CODECS="avc1.4D401E,mp4a.40.2",AUDIO="234"
+                        https://manifest.googlevideo.com/video-230.m3u8
+                    """.trimIndent()
+                    path.endsWith("/master-video.m3u8") -> """
+                        #EXTM3U
+                        #EXT-X-STREAM-INF:BANDWIDTH=962461,CODECS="mp4a.40.2,avc1.4D401E"
+                        https://manifest.googlevideo.com/video-93.m3u8
+                        #EXT-X-STREAM-INF:BANDWIDTH=269034,CODECS="mp4a.40.5,avc1.42C00B"
+                        https://manifest.googlevideo.com/video-91.m3u8
+                    """.trimIndent()
+                    else -> error("unexpected request $path")
+                }
+                respond(json, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+            }
+        }
     }
 
     private fun signInWall() = HttpClient(MockEngine) {
