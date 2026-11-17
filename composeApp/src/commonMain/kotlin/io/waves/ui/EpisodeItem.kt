@@ -8,6 +8,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.material3.LocalContentColor
@@ -264,8 +271,9 @@ fun EpisodeItem(
                 CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RowControlSize) {
                     PlayPill(row, isCurrent, isPlaying, showArtworkUrl, pillPlaceholder, onClick = if (isPlaying) onPause else onPlay)
                     Spacer(Modifier.width(6.dp))
-                    downloadControl?.invoke(Modifier.size(RowControlSize))
-                    if (onToggleComplete != null && !row.played) {
+                    // A stream on air has nothing to download and no end to mark it played at.
+                    if (!row.live) downloadControl?.invoke(Modifier.size(RowControlSize))
+                    if (onToggleComplete != null && !row.played && !row.live) {
                         IconButton(onClick = onToggleComplete, modifier = Modifier.size(RowControlSize)) {
                             CompleteGlyph("Mark complete")
                         }
@@ -452,9 +460,10 @@ private fun PlayPill(
     val dark = colors.background.luminance() < 0.5f
     val coverAccent = remember(seed, dark) { seed?.let { playerPalette(it, dark).accent } }
     val player = LocalPlayerColors.current?.takeIf { isCurrent }
-    val container = player?.container ?: if (isCurrent) colors.primary else Color.Transparent
-    val content = player?.onContainer ?: if (isCurrent) colors.onPrimary else colors.onSurface
-    val icon = if (isCurrent) content else coverAccent ?: colors.primary
+    // A stream on air wears the red of a live archive's "LIVED" ribbon: on its play icon, and filled with it once it plays.
+    val container = if (row.live && isCurrent) LiveRed else player?.container ?: if (isCurrent) colors.primary else Color.Transparent
+    val content = if (row.live && isCurrent) Color.White else player?.onContainer ?: if (isCurrent) colors.onPrimary else colors.onSurface
+    val icon = if (isCurrent) content else if (row.live) LiveRed else coverAccent ?: colors.primary
     Surface(
         onClick = onClick,
         shape = CircleShape,
@@ -468,10 +477,13 @@ private fun PlayPill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // A stream on air breathes, icon and label together: it's on as you look at it.
+            val breath = if (row.live) onLiveBreath() else null
+            val breathing = if (breath != null) Modifier.graphicsLayer { alpha = breath.value } else Modifier
             Icon(
                 if (isPlaying) Icons.Outlined.PauseCircle else Icons.Outlined.PlayCircle,
                 if (isPlaying) "Pause" else "Play",
-                Modifier.size(20.dp),
+                Modifier.size(20.dp).then(breathing),
                 tint = icon,
             )
             val style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp)
@@ -489,6 +501,7 @@ private fun PlayPill(
                 when {
                     shown == null -> Unit
                     shown.pending -> PendingLabel(shown.text, style)
+                    row.live -> Text(shown.text, style = style, maxLines = 1, modifier = breathing)
                     else -> Text(shown.text, style = style, maxLines = 1)
                 }
             }
@@ -497,6 +510,18 @@ private fun PlayPill(
 }
 
 private data class PillLabel(val text: String, val pending: Boolean = false)
+
+/** The play pill's label for a stream on air. */
+private const val ON_LIVE = "On Live"
+
+/** An alpha fading down and back up, like breathing, for the play pill of a stream on air. */
+@Composable
+private fun onLiveBreath(): State<Float> = rememberInfiniteTransition(label = "on live").animateFloat(
+    initialValue = 1f,
+    targetValue = 0.4f,
+    animationSpec = infiniteRepeatable(tween(1_000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+    label = "on live alpha",
+)
 
 /**
  * A label's room, [text] unseen, holding a slim bar a shimmer sweeps along. The bar only shows once the wait outlasts
@@ -561,6 +586,7 @@ private val RowGlyphSize = 22.dp
 internal fun summaryText(description: String): String = plainText(description).replace(Regex("\\s+"), " ").trim()
 
 private fun pillLabel(row: EpisodeRow): String? {
+    if (row.live) return ON_LIVE
     if (row.played) return "Played"
     val durationMs = row.progress?.durationMs?.takeIf { it > 0 } ?: row.episode.durationSeconds?.times(1000)
     val position = row.progress?.positionMs ?: 0

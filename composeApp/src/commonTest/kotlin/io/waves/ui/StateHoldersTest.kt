@@ -201,6 +201,37 @@ class DiscoverStateTest {
     }
 
     @Test
+    fun aLinkToAStreamOnAirAlsoOpensIt() = runTest {
+        val channel = Podcast(feedUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=UCexampleChannel00000000", title = "Example Channel")
+        val archive = Podcast(feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=UULVexampleChannel00000000", title = "Example Channel · Lived")
+        val stream = io.waves.youtube.LiveStream(archive, episode(archive, 1).copy(guid = "liveNow0001"))
+        val opened = mutableListOf<io.waves.youtube.LiveStream>()
+        val s = DiscoverState(
+            RecordingDirectory(emptyList()), backgroundScope,
+            resolveYoutube = { listOf(channel, archive) },
+            resolveLive = { link -> stream.takeIf { "liveNow0001" in link } },
+            onLive = { opened += it },
+        )
+        s.onQueryChange("https://www.youtube.com/watch?v=abcdefghijk")
+        settle()
+        assertTrue(opened.isEmpty(), "a recording's link only lists its channel")
+        s.onQueryChange("https://www.youtube.com/watch?v=liveNow0001")
+        settle()
+        assertEquals(listOf(stream), opened)
+        assertEquals(listOf(channel, archive), s.state.value.results)
+        // The same link searched again (a refresh) opens nothing more.
+        s.refresh()
+        settle()
+        assertEquals(1, opened.size)
+        // Opened again from the results, its live archive still lists the stream first; the channel never does.
+        assertEquals(stream.episode, s.liveOf(archive))
+        assertEquals(null, s.liveOf(channel))
+        s.onQueryChange("news")
+        settle()
+        assertEquals(null, s.liveOf(archive))
+    }
+
+    @Test
     fun creatorSearchListsOnlyTheCreatorsOwnShows() = runTest {
         val apple = Podcast(feedUrl = "https://example.com/nbc.xml", title = "NBC News Daily")
         val channel = Podcast(feedUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=UCexampleChannel00000000", title = "NBC News")
@@ -279,6 +310,49 @@ class PodcastDetailStateTest {
         assertEquals(listOf("g2", "g1"), s.state.value.episodes.map { it.episode.guid })
         assertEquals("fresh", s.state.value.podcast.description)
         assertFalse(s.state.value.refreshing)
+    }
+
+    @Test
+    fun aStreamOnAirIsListedFirstOnItsShowsPage() = runTest {
+        val live = episode(podcastA, 9).copy(guid = "liveNow0001", durationSeconds = null, publishedAtEpochMs = null)
+        val s = PodcastDetailState(
+            podcastA, feeds, library, RecordingDirectory(emptyList()), backgroundScope, autoFetch = true, live = live,
+        )
+        settle()
+        val rows = s.state.value.episodes
+        assertEquals(listOf("liveNow0001", "g2", "g1"), rows.map { it.episode.guid })
+        assertEquals(listOf(true, false, false), rows.map { it.live })
+        // It isn't one of the feed's episodes: nothing of it is stored.
+        assertEquals(2, library.episodes(podcastA.feedUrl).first().size)
+    }
+
+    @Test
+    fun aLiveArchivesPageListsWhatItsChannelHasOnAirFirstHoweverItIsOpened() = runTest {
+        val channel = Podcast(feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=UULVexampleChannel00000000", title = "Example Channel · Lived")
+        var onAir = listOf(episode(channel, 9).copy(guid = "liveNow0001"))
+        val asked = mutableListOf<String>()
+        val look: suspend (String) -> List<io.waves.model.Episode> = { id -> asked += id; onAir }
+        library.upsertEpisodes(channel.feedUrl, listOf(episode(channel, 1)))
+        val s = PodcastDetailState(channel, feeds, library, RecordingDirectory(emptyList()), backgroundScope, autoFetch = false, liveNow = look)
+        settle()
+        assertEquals(listOf("UCexampleChannel00000000"), asked)
+        assertEquals(listOf(true, false), s.state.value.episodes.map { it.live })
+        assertEquals("liveNow0001", s.state.value.episodes.first().episode.guid)
+
+        // Looked at again on a refresh: the stream has ended.
+        onAir = emptyList()
+        s.refresh()
+        settle()
+        assertEquals(listOf(false), s.state.value.episodes.map { it.live })
+
+        // Any other show is never asked about, the channel's own page included: its streams belong to its archive.
+        asked.clear()
+        val own = Podcast(feedUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=UCexampleChannel00000000", title = "Example Channel")
+        for (show in listOf(podcastA, own)) {
+            PodcastDetailState(show, feeds, library, RecordingDirectory(emptyList()), backgroundScope, autoFetch = false, liveNow = look)
+        }
+        settle()
+        assertTrue(asked.isEmpty())
     }
 
     @Test

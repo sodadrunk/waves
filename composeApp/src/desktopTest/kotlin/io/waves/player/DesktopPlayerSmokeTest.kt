@@ -12,6 +12,10 @@ import kotlin.test.assertTrue
  *
  * Optional: WAVES_PLAYER_SMOKE_URL=<enclosure url> to try a specific episode,
  * WAVES_PLAYER_SMOKE_AWT=1 to boot AWT first (like the Compose app does) before JavaFX.
+ *
+ * A YouTube stream that is on air, found the way the app finds it and played:
+ *
+ *   WAVES_LIVE_SMOKE_URL=<watch url> ./gradlew :composeApp:desktopTest --tests '*DesktopPlayerSmokeTest*' --rerun -i
  */
 class DesktopPlayerSmokeTest {
     private val urls = System.getenv("WAVES_PLAYER_SMOKE_URL")?.let { listOf(it) } ?: listOf(
@@ -80,6 +84,81 @@ class DesktopPlayerSmokeTest {
             assertNull(player.state.value.error)
         } finally {
             player.release()
+        }
+    }
+
+    @Test
+    fun playsAYoutubeStreamOnAir() {
+        val url = System.getenv("WAVES_LIVE_SMOKE_URL") ?: return
+        useEnvProxy()
+        val http = io.ktor.client.HttpClient(io.ktor.client.engine.java.Java) { expectSuccess = false }
+        val locator = io.waves.youtube.YoutubeMediaLocator(http)
+        // Found the way a pasted link to it is: on its channel's Live tab.
+        val found = kotlinx.coroutines.runBlocking { io.waves.youtube.YoutubeChannels(http).liveStream(url) }
+        println("live stream -> ${found?.podcast?.title}: ${found?.episode?.title}")
+        assertTrue(found != null, "the link's stream is listed as on air on its channel")
+        val player = DesktopAudioPlayer { locator.locateMedia(it).also { media -> println("located -> $media") } }
+        val episode = Episode(guid = "live", podcastFeedUrl = "https://example.com/feed", title = "Live", audioUrl = url)
+        fun awaitSound(what: String) {
+            val deadline = System.currentTimeMillis() + 30_000
+            while (System.currentTimeMillis() < deadline) {
+                val s = player.state.value
+                check(s.error == null) { "playback error: ${s.error}" }
+                if (s.isPlaying && !s.isBuffering && s.isLive) return println("$what: $s")
+                Thread.sleep(100)
+            }
+            error("$what: the stream did not start within 30s: ${player.state.value}")
+        }
+        try {
+            player.play(episode, startPositionMs = 123_000) // a start position means nothing to it
+            awaitSound("playing")
+            sample(player, seconds = 8)
+            val onAir = player.state.value
+            assertTrue(PlayerMath.isAtLiveEdge(onAir.positionMs, onAir.durationMs), "starts on air: $onAir")
+
+            // Rewound ten minutes, it plays from there on.
+            val back = onAir.durationMs - 600_000
+            player.seekTo(back)
+            Thread.sleep(300)
+            awaitSound("rewound")
+            sample(player, seconds = 8)
+            val rewound = player.state.value.positionMs
+            assertTrue(rewound in back - 10_000..back + 20_000, "about ten minutes back ($back), was $rewound")
+
+            // Paused, it resumes where it was, not on air.
+            player.pause()
+            Thread.sleep(8_000)
+            assertTrue(!player.state.value.isPlaying)
+            player.resume()
+            Thread.sleep(300)
+            awaitSound("playing again")
+            sample(player, seconds = 5)
+            val resumed = player.state.value
+            assertTrue(resumed.durationMs - resumed.positionMs in 560_000..640_000, "still about ten minutes behind: $resumed")
+
+            // Sought to the end, it's back on air.
+            player.seekTo(Long.MAX_VALUE)
+            Thread.sleep(300)
+            awaitSound("on air again")
+            sample(player, seconds = 5)
+            assertTrue(player.state.value.let { PlayerMath.isAtLiveEdge(it.positionMs, it.durationMs) }, "${player.state.value}")
+
+            // Three quick skips back from on air add up, each counted from the last.
+            val before = player.state.value
+            repeat(3) {
+                player.seekTo(player.state.value.positionMs - 15_000)
+                Thread.sleep(150)
+            }
+            Thread.sleep(300)
+            awaitSound("skipped back three times")
+            sample(player, seconds = 5)
+            val skipped = player.state.value
+            val behind = (before.durationMs - before.positionMs).let { skipped.durationMs - skipped.positionMs - it }
+            assertTrue(behind in 35_000..60_000, "about 45 s further back, was $behind ms: $skipped")
+            assertNull(player.state.value.error)
+        } finally {
+            player.release()
+            http.close()
         }
     }
 

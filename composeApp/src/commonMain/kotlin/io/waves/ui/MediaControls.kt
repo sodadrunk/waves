@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import io.waves.model.Episode
+import io.waves.player.PlayerMath
 import kotlinx.coroutines.flow.flowOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -161,6 +162,11 @@ internal fun ControlPanel(
     controller: PlaybackController,
     download: (@Composable () -> Unit)?,
     sizes: ControlSizes = ControlSizes.Default,
+    /**
+     * A stream on air: the seek line runs over what it can be rewound by and ends in a "LIVE" mark that goes back on
+     * air, and there's no speed to choose (what's on air can't be played faster) or download.
+     */
+    live: Boolean = false,
 ) {
     Column(
         Modifier
@@ -175,23 +181,27 @@ internal fun ControlPanel(
                 textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
-        SeekLine(positionMs, durationMs, isPlaying && ring != PlayRing.Loading, controller::seekTo, sizes)
+        SeekLine(positionMs, durationMs, isPlaying && ring != PlayRing.Loading, controller::seekTo, sizes, live)
         Spacer(Modifier.height(4.dp))
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            SpeedChip(speed, controller::setSpeed, sizes)
+            if (live) Spacer(Modifier.size(sizes.button)) else SpeedChip(speed, controller::setSpeed, sizes)
             SkipButton(skipBackSeconds, forward = false, controller::skipBack, sizes)
             PlayPauseButton(isPlaying, ring, controller::togglePlayPause, sizes)
             SkipButton(skipForwardSeconds, forward = true, controller::skipForward, sizes)
-            Box(Modifier.size(sizes.button), contentAlignment = Alignment.Center) { download?.invoke() }
+            Box(Modifier.size(sizes.button), contentAlignment = Alignment.Center) { if (!live) download?.invoke() }
         }
     }
 }
 
-/** Elapsed time, a squiggly seek track (as in Android System UI's media controls), and remaining time on one line. */
+/**
+ * Elapsed time, a squiggly seek track (as in Android System UI's media controls), and remaining time on one line.
+ * For a [live] stream: how far behind what's on air it plays (nothing when it's on air), the track over what can be
+ * rewound, and a "LIVE" mark, lit while on air, that goes back there.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SeekLine(
@@ -200,11 +210,14 @@ private fun SeekLine(
     playing: Boolean,
     onSeek: (Long) -> Unit,
     sizes: ControlSizes,
+    live: Boolean = false,
 ) {
     // While dragging, show the drag position instead of the (still advancing) player position.
     var dragging by remember { mutableStateOf<Float?>(null) }
     val max = durationMs.coerceAtLeast(1).toFloat()
-    val value = (dragging ?: positionMs.coerceIn(0, durationMs.coerceAtLeast(0)).toFloat()).coerceIn(0f, max)
+    // On air, the playhead rests at the end, though the player keeps a few seconds behind the newest audio.
+    val onAir = live && dragging == null && PlayerMath.isAtLiveEdge(positionMs, durationMs)
+    val value = if (onAir) max else (dragging ?: positionMs.coerceIn(0, durationMs.coerceAtLeast(0)).toFloat()).coerceIn(0f, max)
     val interaction = remember { MutableInteractionSource() }
     val active by interaction.collectIsDraggedAsState()
     val pressed by interaction.collectIsPressedAsState()
@@ -212,7 +225,14 @@ private fun SeekLine(
     val timeStyle = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum")
     val waving = playing && durationMs > 0 && !active && !pressed
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(formatDuration(value.toLong()), style = timeStyle, modifier = Modifier.widthIn(min = 36.dp))
+        Text(
+            when {
+                !live -> formatDuration(value.toLong())
+                onAir || PlayerMath.isAtLiveEdge(value.toLong(), durationMs) -> ""
+                else -> "-" + formatDuration(durationMs - value.toLong())
+            },
+            style = timeStyle, modifier = Modifier.widthIn(min = 36.dp),
+        )
         Slider(
             value = value,
             onValueChange = { dragging = it },
@@ -232,10 +252,31 @@ private fun SeekLine(
             },
             track = { SquigglyTrack(if (max > 0f) value / max else 0f, waving, accent) },
         )
-        Text(
-            if (durationMs > 0) "-" + formatDuration(durationMs - value.toLong()) else "--:--",
-            style = timeStyle, textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 36.dp),
-        )
+        if (live) {
+            LiveMark(onAir, onClick = { onSeek(Long.MAX_VALUE) })
+        } else {
+            Text(
+                if (durationMs > 0) "-" + formatDuration(durationMs - value.toLong()) else "--:--",
+                style = timeStyle, textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 36.dp),
+            )
+        }
+    }
+}
+
+/** "● LIVE": lit while the stream plays what's on air; dimmed while it's rewound, when a tap goes back on air. */
+@Composable
+private fun LiveMark(onAir: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val color = if (onAir) colors.error else colors.onSurfaceVariant
+    Row(
+        Modifier.clip(CircleShape)
+            .clickable(enabled = !onAir, role = Role.Button, onClickLabel = "Go to live", onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+        Text("LIVE", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = color)
     }
 }
 

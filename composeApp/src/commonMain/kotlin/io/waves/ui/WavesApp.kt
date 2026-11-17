@@ -54,6 +54,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import io.waves.data.ArtworkColorStore
 import io.waves.data.LibraryRepository
+import io.waves.model.Episode
 import io.waves.model.EpisodeId
 import io.waves.model.HistoryEntry
 import io.waves.model.Podcast
@@ -115,6 +116,13 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         country = deps.settings.settings.map { it.effectiveCountry }
             .stateIn(scope, SharingStarted.Eagerly, deps.settings.settings.value.effectiveCountry),
         resolveYoutube = deps.youtube?.let { channels -> { channels.shows(it) } },
+        resolveLive = deps.youtube?.let { channels -> { channels.liveStream(it) } },
+        // Only while Discover is what's on screen: found a moment after the user moved on, it stays in the results.
+        onLive = { live ->
+            if (navigator.content == Screen.Root(Tab.Discover)) {
+                navigator.push(Screen.PodcastDetail(live.podcast, autoFetch = true, live = live.episode))
+            }
+        },
         fetchFeed = { deps.feeds.fetchLatest(it) },
         storedEpisodes = { deps.library.episodes(it).first() },
     )
@@ -128,6 +136,16 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         onEpisodesAbsent = deps.onEpisodesAbsent,
         hiddenFeeds = deps.library.showSettings.map { m -> m.values.filterNot { it.inHome }.mapTo(HashSet()) { it.feedUrl } }
             .distinctUntilChanged(),
+    )
+    /** Streams on air from followed YouTube channels; none without [AppDependencies.youtube]. */
+    val liveNow = LiveNowState(
+        // Not from shows kept out of Home.
+        combine(deps.library.subscriptions, deps.library.showSettings) { shows, settings ->
+            shows.filter { settings[it.feedUrl]?.inHome != false }
+        },
+        liveNow = { channelId -> deps.youtube?.liveNow(channelId).orEmpty() },
+        scope = scope,
+        offline = deps.offline,
     )
     val history = HistoryState(deps.library, scope, downloads = deps.downloads?.downloads ?: flowOf(emptyList()))
     init {
@@ -171,14 +189,14 @@ fun WavesApp(deps: AppDependencies, app: AppState = remember(deps) { AppState(de
     val openPodcast: (Podcast, Boolean) -> Unit = { podcast, autoFetch ->
         nav.push(Screen.PodcastDetail(podcast, autoFetch))
     }
-    val playById: (EpisodeId, String) -> Unit = { id, podcastTitle ->
+    val playFromHistory: (HistoryEntry) -> Unit = { entry ->
+        val id = entry.episodeId
         scope.launch {
-            val episode = deps.library.episode(id) ?: return@launch
-            val podcast = deps.library.podcast(id.feedUrl) ?: Podcast(feedUrl = id.feedUrl, title = podcastTitle)
+            val episode = deps.library.episode(id) ?: youtubeEpisodeOf(entry) ?: return@launch
+            val podcast = deps.library.podcast(id.feedUrl) ?: Podcast(feedUrl = id.feedUrl, title = entry.podcastTitle)
             app.playback.play(episode, podcast)
         }
     }
-    val playFromHistory: (HistoryEntry) -> Unit = { entry -> playById(entry.episodeId, entry.podcastTitle) }
 
     WavesTheme(app.artworkColors) { CompositionLocalProvider(LocalPlaylistColors provides app.playlistColors) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -205,6 +223,8 @@ fun WavesApp(deps: AppDependencies, app: AppState = remember(deps) { AppState(de
                 if (!homeShown) {
                     delay(600)
                     app.home.releaseOrder()
+                } else {
+                    app.liveNow.refresh()
                 }
             }
             // The tab the navigator took from the pages coming to rest: no call to move them, which may be on the
@@ -268,6 +288,22 @@ fun WavesApp(deps: AppDependencies, app: AppState = remember(deps) { AppState(de
     } }
 }
 
+/**
+ * A YouTube video played from somewhere that stores no episode for it (a live stream, which isn't one of its show's
+ * episodes): its id is the video's, which is all it takes to play it again, live still or as the recording it became.
+ */
+private fun youtubeEpisodeOf(entry: HistoryEntry): Episode? {
+    val id = entry.episodeId
+    if (!YoutubeUrls.isYoutubeShow(id.feedUrl) || !YoutubeUrls.isVideoId(id.guid)) return null
+    return Episode(
+        guid = id.guid,
+        podcastFeedUrl = id.feedUrl,
+        title = entry.episodeTitle,
+        audioUrl = YoutubeUrls.watchUrl(id.guid),
+        artworkUrl = "https://i.ytimg.com/vi/${id.guid}/hqdefault.jpg",
+    )
+}
+
 @Composable
 private fun CurrentScreen(
     app: AppState,
@@ -328,6 +364,7 @@ private fun CurrentScreen(
                         when (tab) {
                             Tab.Home -> HomeScreen(
                                 state = app.home,
+                                liveNow = app.liveNow,
                                 playback = playback,
                                 onOpenPodcast = { openPodcast(it, false) },
                                 onPlay = app.playback::play,
@@ -338,7 +375,8 @@ private fun CurrentScreen(
                             )
                             Tab.Discover -> DiscoverScreen(
                                 app.discover,
-                                onOpenPodcast = { openPodcast(it, true) },
+                                // A show listed for a pasted link to a stream on air opens with that stream first.
+                                onOpenPodcast = { nav.push(Screen.PodcastDetail(it, autoFetch = true, live = app.discover.liveOf(it))) },
                                 playback = playback,
                                 onPlay = app.playback::play,
                                 onPause = app.playback::pause,
@@ -424,6 +462,8 @@ private fun CurrentScreen(
                         offline = deps.offline,
                         playable = app.offlinePlayable,
                         recentFetches = app.recentFetches,
+                        live = screen.live,
+                        liveNow = deps.youtube?.let { youtube -> { channel -> youtube.liveNow(channel) } },
                     )
                 }
                 val pageTitle = detail.state.collectAsState().value.podcast.title

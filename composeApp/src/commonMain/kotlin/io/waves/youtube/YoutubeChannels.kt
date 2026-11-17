@@ -10,6 +10,7 @@ import io.ktor.http.isSuccess
 import io.waves.net.ResponseCache
 import io.waves.feed.FeedDates
 import io.waves.feed.FeedFetchException
+import io.waves.model.Episode
 import io.waves.model.Podcast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -36,6 +37,7 @@ class YoutubeChannels(private val client: HttpClient) {
     /** [hasLiveArchive]'s answers, by channel, for as long as the app runs. */
     private val liveArchives = mutableMapOf<String, Boolean>()
     private val liveArchivesLock = Mutex()
+    private val channelOfVideoLock = Mutex()
 
     suspend fun resolve(input: String): Podcast {
         val target = YoutubeUrls.parse(input.trim())
@@ -67,14 +69,7 @@ class YoutubeChannels(private val client: HttpClient) {
      */
     suspend fun channelShows(channel: Podcast, archive: Podcast? = null): List<Podcast> = coroutineScope {
         val channelId = YoutubeUrls.channelIdOfFeed(channel.feedUrl) ?: return@coroutineScope listOf(channel)
-        val live = async {
-            archive ?: Podcast(
-                feedUrl = YoutubeUrls.liveArchiveFeedUrl(channelId),
-                title = liveArchiveTitle(channel.title),
-                author = channel.title,
-                artworkUrl = channel.artworkUrl,
-            ).takeIf { hasLiveArchive(channelId) == true }
-        }
+        val live = async { archive ?: liveArchiveOf(channel, channelId).takeIf { hasLiveArchive(channelId) == true } }
         val playlists = async {
             playlistsTab(channelId)?.let(::parseChannelPlaylists).orEmpty().map { (id, title) ->
                 Podcast(
@@ -126,6 +121,40 @@ class YoutubeChannels(private val client: HttpClient) {
         return answer
     }
 
+    /**
+     * The channel's streams on air right now, as its Live tab lists them (first, and badged), as episodes of its live
+     * archive, where each turns up under the same id once it has ended. They play as live streams and have no length.
+     * Looked at again after [LiveTabTtl]. Throws [YoutubeException] when YouTube doesn't answer: that isn't "nothing
+     * on air", and a caller may keep what it listed before.
+     */
+    suspend fun liveNow(channelId: String): List<Episode> {
+        val tab = tab(channelId, LIVE_TAB_PARAMS) ?: throw YoutubeException("YouTube didn't say what's on air")
+        return parseListedVideos(tab).filter { it.live }.map { video ->
+            Episode(
+                guid = video.id,
+                podcastFeedUrl = YoutubeUrls.liveArchiveFeedUrl(channelId),
+                title = video.title,
+                audioUrl = YoutubeUrls.watchUrl(video.id),
+                artworkUrl = "https://i.ytimg.com/vi/${video.id}/hqdefault.jpg",
+            )
+        }
+    }
+
+    /**
+     * The stream a pasted video link is of, when it's on air right now, with its channel's live archive as the show;
+     * null for a recording, any other link, or when YouTube doesn't say.
+     */
+    suspend fun liveStream(input: String): LiveStream? {
+        val videoId = (YoutubeUrls.parse(input.trim()) as? YoutubeTarget.Video)?.id ?: return null
+        val (channelId, episode) = try {
+            val channelId = channelOfVideo(videoId)
+            channelId to (liveNow(channelId).firstOrNull { it.guid == videoId } ?: return null)
+        } catch (_: YoutubeException) {
+            return null
+        }
+        return LiveStream(liveArchiveOf(podcast(channelId), channelId), episode)
+    }
+
     /** The channel's past live streams as a show of their own: what a channel's Live tab link stands for. */
     suspend fun liveArchive(channelId: String): Podcast = playlist(YoutubeUrls.liveListId(channelId))
 
@@ -138,9 +167,13 @@ class YoutubeChannels(private val client: HttpClient) {
         }
     }
 
-    private suspend fun channelOfVideo(videoId: String): String {
+    /**
+     * The channel a video is on. One lookup at a time: a pasted link is resolved as its shows and as a live stream
+     * side by side, and the second to ask finds the first one's answer kept instead of asking YouTube again.
+     */
+    private suspend fun channelOfVideo(videoId: String): String = channelOfVideoLock.withLock {
         val author = authorUrl(videoId) ?: throw YoutubeException("Couldn't find the channel for that video")
-        return when (val target = YoutubeUrls.parse(author)) {
+        when (val target = YoutubeUrls.parse(author)) {
             is YoutubeTarget.Channel -> target.id
             is YoutubeTarget.Vanity -> browseId(target.url)
             else -> throw YoutubeException("Couldn't find the channel for that video")
@@ -166,7 +199,12 @@ class YoutubeChannels(private val client: HttpClient) {
         return jsonObject(text)?.string("author_url")
     }
 
-    private suspend fun browseId(url: String): String {
+    /**
+     * The channel a `/@handle`, `/c/` or `/user/` link names. For some handles YouTube answers with another address
+     * for the same channel (`/@channelnewsasia` → `/channelnewsasia`) instead of the channel: that one is asked
+     * about in turn.
+     */
+    private suspend fun browseId(url: String, redirects: Int = 2): String {
         val body = buildJsonObject {
             putJsonObject("context") { put("client", webClient()) }
             put("url", url)
@@ -178,10 +216,11 @@ class YoutubeChannels(private val client: HttpClient) {
                 WEB_USER_AGENT,
             )
         }
-        val id = jsonObject(text)
-            ?.obj("endpoint")?.obj("browseEndpoint")?.string("browseId")
-            ?.takeIf { YoutubeUrls.isChannelId(it) }
-        return id ?: throw YoutubeException("That link isn't a YouTube channel")
+        val endpoint = jsonObject(text)?.obj("endpoint")
+        endpoint?.obj("browseEndpoint")?.string("browseId")?.takeIf { YoutubeUrls.isChannelId(it) }?.let { return it }
+        val next = endpoint?.obj("urlEndpoint")?.string("url")
+            ?.takeIf { redirects > 0 && it != url && YoutubeUrls.isYoutubeHost(it.substringAfter("://").substringBefore('/')) }
+        return next?.let { browseId(it, redirects - 1) } ?: throw YoutubeException("That link isn't a YouTube channel")
     }
 
     private suspend fun podcast(channelId: String): Podcast {
@@ -243,9 +282,14 @@ class YoutubeChannels(private val client: HttpClient) {
             put("params", params)
         }.toString()
         // New uploads show on the Videos tab, so it's kept briefly; the playlists change far less.
-        val ttl = if (params == VIDEOS_TAB_PARAMS) VideosTabTtl else ChannelTtl
+        val ttl = when (params) {
+            VIDEOS_TAB_PARAMS -> VideosTabTtl
+            LIVE_TAB_PARAMS -> LiveTabTtl
+            else -> ChannelTtl
+        }
         val text = try {
-            ResponseCache.text("youtube tab $channelId $params", ttl) {
+            // What was on air at an earlier look says nothing about now: a failed look at the Live tab is a failure.
+            ResponseCache.text("youtube tab $channelId $params", ttl, staleOnError = params != LIVE_TAB_PARAMS) {
                 client.postJson("https://www.youtube.com/youtubei/v1/browse?prettyPrint=false", body, WEB_USER_AGENT)
             }
         } catch (e: CancellationException) {
@@ -292,6 +336,23 @@ internal data class ChannelMetadata(val title: String?, val description: String?
 
 /** `browse` params that select a channel's Videos tab. */
 private const val VIDEOS_TAB_PARAMS = "EgZ2aWRlb3PyBgQKAjoA"
+
+/** `browse` params that select a channel's Live tab: its streams, those on air first. */
+private const val LIVE_TAB_PARAMS = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
+
+/**
+ * The live archive of [channel] (whose id is [channelId]) as a show, named after the channel and covered like it, as
+ * its own feed names and covers it.
+ */
+fun liveArchiveOf(channel: Podcast, channelId: String) = Podcast(
+    feedUrl = YoutubeUrls.liveArchiveFeedUrl(channelId),
+    title = liveArchiveTitle(channel.title),
+    author = channel.title,
+    artworkUrl = channel.artworkUrl,
+)
+
+/** A stream on air and the show it belongs to: its channel's live archive. */
+data class LiveStream(val podcast: Podcast, val episode: Episode)
 
 /** `browse` params that select a channel's Playlists tab. */
 private const val PLAYLISTS_TAB_PARAMS = "EglwbGF5bGlzdHPyBgQKAkIA"
@@ -388,5 +449,7 @@ private val ChannelOfLinkTtl = 30.days
 private val ChannelOfVideoTtl = 30.days
 private val ChannelTtl = 1.days
 private val VideosTabTtl = 30.minutes
+/** A stream starts and ends without notice. */
+private val LiveTabTtl = 2.minutes
 /** A video's details: a premiere or stream still live has no length yet, so not too long. */
 private val VideoTtl = 6.hours

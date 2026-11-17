@@ -49,8 +49,8 @@ internal class YoutubeWebFeed(
 /** Videos an Atom feed would carry. */
 internal const val WEB_FEED_SIZE = 15
 
-/** A video as a channel's Videos tab or a playlist's page lists it. */
-internal data class ListedVideo(val id: String, val title: String, val seconds: Long?, val age: String?)
+/** A video as a channel's tab or a playlist's page lists it. [live]: a stream on air right now. */
+internal data class ListedVideo(val id: String, val title: String, val seconds: Long?, val age: String?, val live: Boolean = false)
 
 /**
  * The videos on a Videos tab or playlist page, in order: `lockupViewModel`s (the length is a thumbnail badge, the age
@@ -59,10 +59,10 @@ internal data class ListedVideo(val id: String, val title: String, val seconds: 
 internal fun parseListedVideos(root: JsonElement): List<ListedVideo> {
     val out = ArrayList<ListedVideo>()
     val seen = HashSet<String>()
-    fun add(id: String?, title: String?, length: String?, age: String?) {
+    fun add(id: String?, title: String?, length: String?, age: String?, live: Boolean) {
         if (id == null || !YoutubeUrls.isVideoId(id) || !seen.add(id)) return
         val seconds = length?.takeIf { CLOCK_TIME.matches(it) }?.let(FeedDates::parseDuration)
-        out += ListedVideo(id, title.orEmpty(), seconds, age)
+        out += ListedVideo(id, title.orEmpty(), seconds, age, live)
     }
     fun walk(node: JsonElement) {
         when (node) {
@@ -77,6 +77,7 @@ internal fun parseListedVideos(root: JsonElement): List<ListedVideo> {
                             meta?.obj("title")?.string("content"),
                             badgeTexts(lockup).firstOrNull { CLOCK_TIME.matches(it) },
                             meta?.let(::metadataTexts)?.firstOrNull { AGE.containsMatchIn(it) },
+                            live = hasLiveBadge(lockup),
                         )
                     }
                     renderer != null -> add(
@@ -84,6 +85,7 @@ internal fun parseListedVideos(root: JsonElement): List<ListedVideo> {
                         renderer.obj("title")?.let { it.string("simpleText") ?: runsText(it) },
                         renderer.obj("lengthText")?.string("simpleText"),
                         renderer.obj("publishedTimeText")?.string("simpleText"),
+                        live = hasLiveBadge(renderer),
                     )
                     else -> node.values.forEach(::walk)
                 }
@@ -138,6 +140,19 @@ internal fun approximateTime(age: String, now: Long): Long? {
         else -> 365 * 86_400_000L
     }
     return now - m.groupValues[1].toLong() * unit
+}
+
+/**
+ * Whether a listed video wears the badge of a stream on air: a thumbnail badge in the live style (a scheduled stream's
+ * says "Upcoming" in the plain one) or, in older layouts, a time overlay in it.
+ */
+private fun hasLiveBadge(node: JsonElement): Boolean = when (node) {
+    is JsonObject ->
+        node.obj("thumbnailBadgeViewModel")?.string("badgeStyle") == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" ||
+            node.obj("thumbnailOverlayTimeStatusRenderer")?.string("style") == "LIVE" ||
+            node.values.any(::hasLiveBadge)
+    is JsonArray -> node.any(::hasLiveBadge)
+    else -> false
 }
 
 private val VIDEO_LOCKUPS = setOf(null, "LOCKUP_CONTENT_TYPE_VIDEO")

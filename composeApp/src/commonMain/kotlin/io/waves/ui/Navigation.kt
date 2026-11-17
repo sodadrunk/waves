@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import io.waves.model.Episode
 import io.waves.model.Podcast
 
 /** Bottom navigation / rail order. [Home] is the app's entry point. */
@@ -11,8 +12,11 @@ enum class Tab { Home, Discover, History, Settings }
 
 sealed interface Screen {
     data class Root(val tab: Tab) : Screen
-    /** [autoFetch]: refresh the feed on open (used when coming from search / charts). */
-    data class PodcastDetail(val podcast: Podcast, val autoFetch: Boolean) : Screen
+    /**
+     * [autoFetch]: refresh the feed on open (used when coming from search / charts). [live]: a stream on air to list
+     * first, when the page is opened from a link to it.
+     */
+    data class PodcastDetail(val podcast: Podcast, val autoFetch: Boolean, val live: Episode? = null) : Screen
     data object NowPlaying : Screen
 }
 

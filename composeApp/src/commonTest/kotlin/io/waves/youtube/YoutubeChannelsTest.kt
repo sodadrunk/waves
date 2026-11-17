@@ -257,6 +257,80 @@ class YoutubeChannelsTest {
         assertEquals(null, YoutubeChannels(client).hasLiveArchive(channel))
     }
 
+    /** A channel's Live tab: a stream on air first (badged in the live style), a scheduled one, a recording. */
+    private fun liveTabClient(): HttpClient {
+        fun lockup(id: String, title: String, badge: String, style: String) =
+            """{"richItemRenderer":{"content":{"lockupViewModel":{"contentId":"$id","contentType":"LOCKUP_CONTENT_TYPE_VIDEO",
+                "metadata":{"lockupMetadataViewModel":{"title":{"content":"$title"}}},
+                "contentImage":{"thumbnailViewModel":{"overlays":[{"thumbnailBottomOverlayViewModel":{"badges":[
+                  {"thumbnailBadgeViewModel":{"text":"$badge","badgeStyle":"THUMBNAIL_OVERLAY_BADGE_STYLE_$style"}}]}}]}}}}}}"""
+        val tab = """
+            {"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"richGridRenderer":{"contents":[
+              ${lockup("liveNow0001", "News, live", "LIVE", "LIVE")},
+              ${lockup("upcoming001", "Tonight's show", "Upcoming", "DEFAULT")},
+              ${lockup("abcdefghijk", "Yesterday's show", "43:23", "DEFAULT")}
+            ]}}}}]}}}
+        """.trimIndent()
+        return HttpClient(MockEngine { req ->
+            val body = (req.body as? TextContent)?.text.orEmpty()
+            when {
+                req.url.encodedPath.endsWith("/oembed") ->
+                    respond("""{"author_url":"https://www.youtube.com/channel/$channel"}""", HttpStatusCode.OK, jsonHeaders)
+                req.url.encodedPath.endsWith("/browse") && "EgdzdHJlYW1z" in body -> respond(tab, HttpStatusCode.OK, jsonHeaders)
+                req.url.encodedPath.endsWith("/browse") -> respond(BROWSE, HttpStatusCode.OK, jsonHeaders)
+                else -> respond("nope", HttpStatusCode.NotFound)
+            }
+        })
+    }
+
+    @Test
+    fun aHandleYoutubeAnswersWithAnotherAddressForIsFollowedToItsChannel() = runTest {
+        val asked = mutableListOf<String>()
+        val client = HttpClient(MockEngine { req ->
+            val body = (req.body as? TextContent)?.text.orEmpty()
+            when {
+                req.url.encodedPath.endsWith("/resolve_url") && "/@newsasia" in body -> {
+                    asked += "handle"
+                    respond("""{"endpoint":{"urlEndpoint":{"url":"https://www.youtube.com/newsasia"}}}""", HttpStatusCode.OK, jsonHeaders)
+                }
+                req.url.encodedPath.endsWith("/resolve_url") -> {
+                    asked += "address"
+                    respond("""{"endpoint":{"browseEndpoint":{"browseId":"$channel"}}}""", HttpStatusCode.OK, jsonHeaders)
+                }
+                req.url.encodedPath.endsWith("/browse") -> respond(BROWSE, HttpStatusCode.OK, jsonHeaders)
+                else -> respond("nope", HttpStatusCode.NotFound)
+            }
+        })
+        assertEquals(YoutubeUrls.feedUrl(channel), YoutubeChannels(client).resolve("https://www.youtube.com/@newsasia").feedUrl)
+        assertEquals(listOf("handle", "address"), asked)
+    }
+
+    @Test
+    fun liveNowListsOnlyTheStreamsOnAirAsEpisodesOfTheChannelsLiveArchive() = runTest {
+        val archive = YoutubeUrls.liveArchiveFeedUrl(channel)
+        val live = YoutubeChannels(liveTabClient()).liveNow(channel)
+        assertEquals(listOf("liveNow0001"), live.map { it.guid })
+        val episode = live.single()
+        assertEquals(archive, episode.podcastFeedUrl)
+        assertEquals("News, live", episode.title)
+        assertEquals(YoutubeUrls.watchUrl("liveNow0001"), episode.audioUrl)
+        assertEquals(null, episode.durationSeconds)
+    }
+
+    @Test
+    fun aLinkToAStreamOnAirIsThatStreamUnderItsChannelsLiveArchive() = runTest {
+        val channels = YoutubeChannels(liveTabClient())
+        val live = channels.liveStream("https://www.youtube.com/watch?v=liveNow0001")
+        assertEquals("liveNow0001", live?.episode?.guid)
+        assertEquals(YoutubeUrls.liveArchiveFeedUrl(channel), live?.podcast?.feedUrl)
+        assertEquals("Example Channel · Lived", live?.podcast?.title)
+        assertEquals(YoutubeUrls.liveArchiveFeedUrl(channel), live?.episode?.podcastFeedUrl)
+        // A recording, a scheduled stream and a channel link aren't streams on air.
+        assertEquals(null, channels.liveStream("https://www.youtube.com/watch?v=abcdefghijk"))
+        assertEquals(null, channels.liveStream("https://www.youtube.com/watch?v=upcoming001"))
+        assertEquals(null, channels.liveStream("https://www.youtube.com/channel/$channel"))
+    }
+
     private fun liveLockup(id: String, badge: String) =
         """{"richItemRenderer":{"content":{"lockupViewModel":{"contentId":"$id","contentType":"LOCKUP_CONTENT_TYPE_VIDEO",
             "contentImage":{"thumbnailViewModel":{"overlays":[{"thumbnailBottomOverlayViewModel":{"badges":[

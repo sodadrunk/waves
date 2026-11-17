@@ -94,7 +94,7 @@ fun NowPlayingScreen(
             Box(Modifier.padding(padding)) { Centered { Text("Nothing playing") } }
             return@Scaffold
         }
-        val durationMs = playback.durationMs.takeIf { it > 0 } ?: (episode.durationSeconds ?: 0) * 1000
+        val durationMs = playback.durationMs.takeIf { it > 0 || playback.isLive } ?: (episode.durationSeconds ?: 0) * 1000
         Column(Modifier.padding(padding).fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
             // Reading material on top; everything you tap lives in the panel at the bottom, within thumb reach.
             Column(
@@ -106,7 +106,7 @@ fun NowPlayingScreen(
                     Text(episode.title, style = MaterialTheme.typography.headlineSmall)
                     val meta = listOfNotNull(
                         episode.publishedAtEpochMs?.let(::formatDate),
-                        durationMs.takeIf { it > 0 }?.let(::formatMinutes),
+                        if (playback.isLive) "Live" else durationMs.takeIf { it > 0 }?.let(::formatMinutes),
                     ).joinToString(" · ")
                     if (meta.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
@@ -129,6 +129,7 @@ fun NowPlayingScreen(
                 skipForwardSeconds = skip.forwardSeconds,
                 controller = controller,
                 download = downloads?.let { d -> { DownloadButton(episode, d) } },
+                live = playback.isLive,
             )
         }
     }

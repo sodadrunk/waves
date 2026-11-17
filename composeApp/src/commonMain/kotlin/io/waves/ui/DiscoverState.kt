@@ -7,6 +7,7 @@ import io.waves.search.ChartEpisode
 import io.waves.search.ChartShow
 import io.waves.search.PodcastDirectory
 import io.waves.search.parseApplePodcastsUrl
+import io.waves.youtube.LiveStream
 import io.waves.youtube.YoutubeUrls
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,8 @@ data class DiscoverUiState(
     val searchError: String? = null,
     /** True when [results] came from a pasted show link (Apple Podcasts or YouTube). */
     val resolvedFromUrl: Boolean = false,
+    /** The stream on air the pasted link is of, while [results] are that link's shows. */
+    val live: LiveStream? = null,
 ) {
     val isSearching: Boolean get() = query.isNotBlank()
 }
@@ -56,7 +59,8 @@ data class DiscoverUiState(
 /**
  * Apple top charts + debounced search. Pasting a podcasts.apple.com link resolves it via lookup; pasting a
  * YouTube channel (or video) link resolves the channel as a show via [resolveYoutube], followed by its live archive
- * when it has one and its playlists; a playlist link, the playlist.
+ * when it has one and its playlists; a playlist link, the playlist. A link to a stream on air also opens the channel's
+ * live archive with the stream first ([onLive]).
  * Charts and search use the store [country] (e.g. `UserSettings.effectiveCountry`); both reload when it changes.
  */
 @OptIn(FlowPreview::class)
@@ -67,6 +71,10 @@ class DiscoverState(
     private val debounceMs: Long = 350,
     private val country: StateFlow<String> = MutableStateFlow("us"),
     private val resolveYoutube: (suspend (String) -> List<Podcast>)? = null,
+    /** The stream a pasted YouTube link is of, when it's on air right now; null leaves live links as plain channels. */
+    private val resolveLive: (suspend (String) -> LiveStream?)? = null,
+    /** Opens a pasted link's live stream: its show's page, the stream first. */
+    private val onLive: (LiveStream) -> Unit = {},
     /**
      * The start of a show's feed (its newest episodes), for top episodes Apple's lookup doesn't list yet; null leaves
      * those unfound.
@@ -80,6 +88,9 @@ class DiscoverState(
 
     private val queries = MutableStateFlow("")
     private var refreshJob: Job? = null
+
+    /** The pasted link whose live stream [onLive] was last called for. */
+    private var openedLiveFor: String? = null
 
     /**
      * A creator searched for from a show page, and their own shows (null while still being found), listed instead of
@@ -291,7 +302,17 @@ class DiscoverState(
         }
     }
 
+    /**
+     * The stream on air to list first on [show]'s page, when [show] is opened from the results of a pasted link to
+     * that stream and is the show it belongs to (its channel's live archive); null otherwise.
+     */
+    fun liveOf(show: Podcast): Episode? = _state.value.live?.takeIf { it.podcast.feedUrl == show.feedUrl }?.episode
+
     private suspend fun runSearch(term: String, country: String) {
+        if (!YoutubeUrls.looksLikeUrl(term)) {
+            _state.update { it.copy(live = null) }
+            openedLiveFor = null
+        }
         if (term.isEmpty()) {
             _state.update { it.copy(results = emptyList(), searching = false, searchError = null, resolvedFromUrl = false) }
             return
@@ -308,9 +329,18 @@ class DiscoverState(
                         it.copy(results = emptyList(), searching = false, resolvedFromUrl = true,
                             searchError = "YouTube links aren't available")
                     }
-                val shows = resolve(term)
+                _state.update { it.copy(live = null) }
+                val (shows, live) = coroutineScope {
+                    val stream = async { resolveLive?.invoke(term) }
+                    resolve(term) to stream.await()
+                }
                 _state.update {
-                    it.copy(results = shows, searching = false, resolvedFromUrl = true, searchError = null)
+                    it.copy(results = shows, searching = false, resolvedFromUrl = true, searchError = null, live = live)
+                }
+                // Once per pasted link: a search run again for it (a refresh, another store country) opens nothing.
+                if (live != null && openedLiveFor != term) {
+                    openedLiveFor = term
+                    onLive(live)
                 }
                 return
             }

@@ -29,7 +29,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import io.waves.model.Episode
 import io.waves.model.Podcast
 import io.waves.player.PlaybackState
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,8 +55,11 @@ fun HomeScreen(
     downloads: DownloadsState? = null,
     /** Marks an episode complete or not; null hides the per-episode button. */
     onSetCompleted: ((Episode, Boolean) -> Unit)? = null,
+    /** Streams on air from followed channels, listed first; null lists none. */
+    liveNow: LiveNowState? = null,
 ) {
     val ui by state.state.collectAsState()
+    val live by (liveNow?.items ?: remember { MutableStateFlow(emptyList()) }).collectAsState()
     Scaffold(
         topBar = {
             WavesTopBar(
@@ -62,7 +69,7 @@ fun HomeScreen(
         },
         contentWindowInsets = WindowInsets(0),
     ) { padding ->
-        if (ui.loaded && ui.subscriptions.isEmpty() && ui.upNext.isEmpty()) {
+        if (ui.loaded && ui.subscriptions.isEmpty() && ui.upNext.isEmpty() && live.isEmpty()) {
             Box(Modifier.padding(padding)) {
                 Centered {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -86,7 +93,12 @@ fun HomeScreen(
                 val pull = rememberPullProgress()
                 WavesPullToRefreshBox(
                     isRefreshing = ui.refreshing,
-                    onRefresh = { if (!ui.offline) state.refreshAll() },
+                    onRefresh = {
+                        if (!ui.offline) {
+                            state.refreshAll()
+                            liveNow?.refresh()
+                        }
+                    },
                     modifier = Modifier.fillMaxSize(),
                     gapTop = if (pinned) ListDividerHeight else 0.dp,
                     progress = pull,
@@ -97,6 +109,19 @@ fun HomeScreen(
                     // Rows come to rest with their divider on the shelf's, not a sliver above or below it.
                     val guides = rememberSnapGuides()
                     if (pinned) SnapToTopLine(list, reach = EpisodeSnapReach, guides = guides)
+                    // A row arriving above the first one (a stream going on air, a new episode) would land out of
+                    // sight above it, as a list holds on to the row it shows first: resting at its top, the list
+                    // stays there instead, and the rows move down to let the new one in.
+                    val firstKey = when {
+                        ui.error != null -> "error"
+                        live.isNotEmpty() -> "live ${live.first().episode.id}"
+                        else -> ui.upNext.firstOrNull()?.row?.episode?.id?.toString()
+                    }
+                    val shownFirst = remember { mutableStateOf(firstKey) }
+                    if (shownFirst.value != firstKey) {
+                        if (list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0) list.requestScrollToItem(0)
+                        SideEffect { shownFirst.value = firstKey }
+                    }
                     LazyColumn(
                         Modifier.fillMaxSize()
                             // Under the shelf, rows scrolling up end at its divider's line instead of fading out. On
@@ -122,7 +147,7 @@ fun HomeScreen(
                         }
                         // Until the library has been read, nothing: rows ease in once it has, without a "loading" line
                         // flashing first on every launch.
-                        if (ui.upNext.isEmpty() && (ui.loaded || ui.refreshing)) {
+                        if (ui.upNext.isEmpty() && live.isEmpty() && (ui.loaded || ui.refreshing)) {
                             item(key = "status") {
                                 Text(
                                     when {
@@ -137,6 +162,25 @@ fun HomeScreen(
                                 )
                             }
                         }
+                        // Streams on air from followed channels, ahead of everything that can wait.
+                        itemsIndexed(live, key = { _, it -> "live ${it.episode.id}" }) { index, item ->
+                            val isCurrent = playback.episode?.id == item.episode.id
+                            EpisodeItem(
+                                row = EpisodeRow(item.episode, progress = null, live = true),
+                                isCurrent = isCurrent,
+                                isPlaying = isCurrent && playback.isPlaying,
+                                onPlay = { onPlay(item.episode, item.podcast) },
+                                onPause = onPause,
+                                show = item.podcast.takeIf { it.title.isNotBlank() },
+                                onOpenShow = { onOpenPodcast(item.podcast) },
+                                badge = "Live now",
+                                divider = index > 0,
+                                dividerBelow = index < live.lastIndex || ui.upNext.isNotEmpty(),
+                                dividerAbove = pinned && index == 0 && ui.error == null,
+                                modifier = Modifier.animateItem(),
+                                snapGuides = guides.takeIf { pinned },
+                            )
+                        }
                         itemsIndexed(ui.upNext, key = { _, it -> it.row.episode.id.toString() }) { index, item ->
                             val isCurrent = playback.episode?.id == item.row.episode.id
                             EpisodeItem(
@@ -149,11 +193,11 @@ fun HomeScreen(
                                 onOpenShow = { onOpenPodcast(item.podcast) },
                                 badge = item.reason.label,
                                 downloadControl = downloads?.let { d -> { m -> DownloadButton(item.row.episode, d, m, compact = true, played = item.row.played) } },
-                                divider = index > 0,
+                                divider = index > 0 || live.isNotEmpty(),
                                 dividerBelow = index < ui.upNext.lastIndex,
                                 // Right under the shelf's divider, the first row's ripple fills up to its zigzag, where the
                                 // clip around the list cuts it.
-                                dividerAbove = pinned && index == 0 && ui.error == null,
+                                dividerAbove = pinned && index == 0 && ui.error == null && live.isEmpty(),
                                 onToggleComplete = onSetCompleted?.let { { it(item.row.episode, !item.row.played) } },
                                 modifier = Modifier.animateItem(),
                                 snapGuides = guides.takeIf { pinned },

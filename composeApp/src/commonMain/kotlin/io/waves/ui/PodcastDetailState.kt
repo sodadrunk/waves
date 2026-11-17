@@ -11,6 +11,7 @@ import io.waves.model.PlaybackProgress
 import io.waves.model.Podcast
 import io.waves.refresh.FeedRefresher
 import io.waves.search.PodcastDirectory
+import io.waves.youtube.YoutubeUrls
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -32,6 +33,8 @@ import kotlin.time.Duration.Companion.hours
 data class EpisodeRow(
     val episode: Episode,
     val progress: PlaybackProgress?,
+    /** A stream on air right now: it has no length, nothing to download and no end to mark it played at. */
+    val live: Boolean = false,
 ) {
     val played: Boolean get() = progress?.completed == true
 }
@@ -66,7 +69,17 @@ class PodcastDetailState(
     /** Null lists every episode; a set (while offline) lists only those that can play without a connection. */
     private val playable: Flow<Set<EpisodeId>?> = flowOf(null),
     private val recentFetches: RecentFetches = RecentFetches(),
+    /** A stream on air to list first at once (the page was opened from a link to it), before [liveNow] answers. */
+    live: Episode? = null,
+    /**
+     * The streams on air of a YouTube channel, as episodes of its live archive: listed first on the archive's page
+     * ("Show · Lived"), the show they belong to. They aren't the feed's episodes, and nothing of them is stored.
+     * Null lists only [live].
+     */
+    private val liveNow: (suspend (channelId: String) -> List<Episode>)? = null,
 ) {
+    private val streams = MutableStateFlow(listOfNotNull(live))
+
     private val podcast = MutableStateFlow(initial)
     private val refreshing = MutableStateFlow(false)
     private val error = MutableStateFlow<String?>(null)
@@ -85,10 +98,13 @@ class PodcastDetailState(
 
     private val progressById = library.allProgress.map { list -> list.associateBy { it.episodeId } }
 
-    private val episodes = combine(storedEpisodes, fetched, progressById, playable) { stored, fetchedList, progress, playable ->
+    private val episodes = combine(storedEpisodes, fetched, progressById, playable, streams) { stored, fetchedList, progress, playable, live ->
         val list = stored.ifEmpty { fetchedList }.let { all -> if (playable == null) all else all.filter { it.id in playable } }
-        list.sortedByDescending { it.publishedAtEpochMs ?: Long.MIN_VALUE }
-            .map { EpisodeRow(it, progress[it.id]) }
+        val onAir = if (playable == null) live else emptyList()
+        val liveIds = onAir.mapTo(HashSet()) { it.id }
+        onAir.map { EpisodeRow(it, progress = null, live = true) } +
+            list.filter { it.id !in liveIds }.sortedByDescending { it.publishedAtEpochMs ?: Long.MIN_VALUE }
+                .map { EpisodeRow(it, progress[it.id]) }
     }
 
     val state: StateFlow<PodcastDetailUiState> =
@@ -108,6 +124,7 @@ class PodcastDetailState(
             // Opened from the player or History the podcast may be just a title; the stored row fills the rest.
             library.podcast(url)?.let { stored -> podcast.update { mergePodcast(stored, it) } }
             library.rememberPodcast(podcast.value)
+            launch { lookForLive() }
             if ((autoFetch && !recentFetches.isFresh(url)) || library.episodes(url).first().isEmpty()) refresh()
         }
     }
@@ -134,6 +151,21 @@ class PodcastDetailState(
     fun refresh() {
         if (offline.value || refreshing.value) return
         scope.launch { doRefresh() }
+        scope.launch { lookForLive() }
+    }
+
+    /** Lists what the show's channel has on air now; what's listed stays when YouTube doesn't answer. */
+    private suspend fun lookForLive() {
+        val look = liveNow ?: return
+        val url = podcast.value.feedUrl
+        val channel = YoutubeUrls.channelIdOfLiveArchive(url) ?: return
+        if (offline.value) return
+        try {
+            streams.value = look(channel)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
     }
 
     private suspend fun doRefresh() {

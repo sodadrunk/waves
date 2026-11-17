@@ -93,13 +93,14 @@ internal fun MenuBarPanel(app: AppState, onOpenApp: () -> Unit, onQuit: () -> Un
                                 isPlaying = playback.isPlaying,
                                 ring = playRing(playback.isBuffering, episode, app.downloads),
                                 positionMs = playback.positionMs,
-                                durationMs = playback.durationMs.takeIf { it > 0 } ?: (episode.durationSeconds ?: 0) * 1000,
+                                durationMs = playback.durationMs.takeIf { it > 0 || playback.isLive } ?: (episode.durationSeconds ?: 0) * 1000,
                                 speed = playback.speed,
                                 error = playback.error,
                                 skipBackSeconds = skip.backSeconds,
                                 skipForwardSeconds = skip.forwardSeconds,
                                 controller = app.playback,
                                 download = app.downloads?.let { d -> { DownloadButton(episode, d) } },
+                                live = playback.isLive,
                             )
                         } else {
                             Spacer(Modifier.height(8.dp))
