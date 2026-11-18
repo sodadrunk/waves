@@ -111,6 +111,8 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         deps.player, deps.library, deps.deviceId, scope, deps.onLocalChange, settings = deps.settings.settings,
         restoreLastSession = true, session = deps.playbackSession,
     )
+    /** Playback that failed with the connection carries on when it is back. */
+    private val reconnect = PlaybackReconnect(deps.player.state, deps.offline, scope, retry = { playback.resume() }).also { it.start() }
     val discover = DiscoverState(
         deps.directory, scope, deps.parseAppleUrl,
         country = deps.settings.settings.map { it.effectiveCountry }

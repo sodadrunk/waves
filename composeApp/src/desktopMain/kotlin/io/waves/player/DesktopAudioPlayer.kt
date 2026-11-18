@@ -63,6 +63,9 @@ class DesktopAudioPlayer(
     @Volatile private var wantPlaying = false
     @Volatile private var pendingSeekMs = 0L
     @Volatile private var speed = 1f
+    /** Where the engine was when last looked at, and when (nanoTime) it last moved or was told to do something. */
+    private var engineAtMs = -1.0
+    @Volatile private var movedAt = 0L
 
     override fun play(episode: Episode, startPositionMs: Long) = play(episode, startPositionMs, null)
 
@@ -70,6 +73,7 @@ class DesktopAudioPlayer(
         val gen = ++generation
         loadJob?.cancel()
         wantPlaying = true
+        movedAt = System.nanoTime()
         pendingSeekMs = startPositionMs.coerceAtLeast(0)
         _state.value = PlaybackState(
             episode = episode,
@@ -130,6 +134,7 @@ class DesktopAudioPlayer(
         // stands meanwhile, so a second skip counts from it, and only the last of several reopenings goes through.
         val reopening = ++liveReopening
         liveReopened = false
+        movedAt = System.nanoTime()
         reopenJob?.cancel()
         reopenJob = scope.launch(Dispatchers.IO) {
             val url = runCatching { session.urlAt(atMs) }.getOrNull()
@@ -154,10 +159,12 @@ class DesktopAudioPlayer(
         this.live = live
         ready = false
         ended = false
+        movedAt = System.nanoTime()
         if (live) _state.update { it.copy(isLive = true) }
         mp.setOnReady {
             if (gen != generation) return@setOnReady
             ready = true
+            movedAt = System.nanoTime()
             // What's on air can't be played faster than it comes.
             mp.rate = if (live) 1.0 else speed.toDouble()
             if (!live && pendingSeekMs > 0) mp.seek(Duration.millis(pendingSeekMs.toDouble()))
@@ -209,12 +216,14 @@ class DesktopAudioPlayer(
             // JavaFX would carry on with the pieces it holds and then skip to what's on air: open it where it paused
             // instead, or at the oldest it still has when that has gone.
             wantPlaying = true
+            movedAt = System.nanoTime()
             _state.update { it.copy(isPlaying = true, isBuffering = true, isEnded = false, error = null) }
             ticker.start()
             reopenLive(liveTimeMs?.coerceAtLeast(session.window().startMs))
             return
         }
         wantPlaying = true
+        movedAt = System.nanoTime()
         _state.update { it.copy(isPlaying = true, isEnded = false, error = null) }
         ticker.start()
         fx {
@@ -277,6 +286,10 @@ class DesktopAudioPlayer(
     /** FX thread: re-reads position/duration/status from the engine into [state]. */
     private fun publishFromPlayer() {
         val mp = player ?: return
+        if (stalled(mp)) {
+            fail(generation, "The connection was lost")
+            return
+        }
         if (!ready && mp.status == MediaPlayer.Status.UNKNOWN) {
             _state.update { it.copy(isBuffering = wantPlaying) }
             return
@@ -312,6 +325,21 @@ class DesktopAudioPlayer(
         if (ready && !live) loadedUrl?.let { onProgress(it, published.positionMs, published.durationMs) }
     }
 
+    /**
+     * FX thread: whether the engine, asked to play, has stood still for [STALL_MS]. Without a connection JavaFX
+     * mostly just stops, saying nothing, and doesn't pick up again when it's back; failing lets playback be tried again.
+     */
+    private fun stalled(mp: MediaPlayer): Boolean {
+        val now = System.nanoTime()
+        val at = mp.currentTime?.toMillis() ?: -1.0
+        if (!wantPlaying || ended || at != engineAtMs) {
+            engineAtMs = at
+            movedAt = now
+            return false
+        }
+        return now - movedAt > STALL_MS * 1_000_000
+    }
+
     /** FX thread: forgets the live stream that was playing. */
     private fun closeLive() {
         liveSession?.close()
@@ -345,3 +373,6 @@ class DesktopAudioPlayer(
         if (JavaFxRuntime.isStarted) JavaFxRuntime.runOnFx(block)
     }
 }
+
+/** How long the engine may stand still, asked to play, before playback counts as having lost its connection. */
+private const val STALL_MS = 20_000L

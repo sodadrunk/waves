@@ -56,10 +56,12 @@ class PlaybackService : MediaSessionService() {
         playbackCache = caching
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
-                caching?.mediaSourceFactory
+                (caching?.mediaSourceFactory
                     ?: androidx.media3.datasource.DefaultDataSource.Factory(this, RangedHttpDataSource.Factory(httpFactory)).let { sources ->
                         HlsTolerantMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(sources), sources)
-                    },
+                    })
+                    // A connection gone for a few minutes: keep buffering and trying, rather than fail.
+                    .setLoadErrorHandlingPolicy(PatientLoadErrorPolicy()),
             )
             .setAudioAttributes(
                 AudioAttributes.Builder()
