@@ -1,6 +1,7 @@
 package io.waves.net
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -35,5 +36,24 @@ class PollOnlineTest {
         runCurrent()
         assertEquals(true, online.value)
         assertEquals(3, checks)
+    }
+
+    @Test
+    fun checksAtOnceWhenTheNetworkChanges() = runTest {
+        var reachable = true
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val online = pollOnline(backgroundScope, changes = changes) { reachable }
+        runCurrent()
+
+        reachable = false
+        changes.tryEmit(Unit)
+        runCurrent()
+        assertEquals(false, online.value)
+
+        reachable = true
+        advanceTimeBy(2.seconds)
+        changes.tryEmit(Unit)
+        runCurrent()
+        assertEquals(true, online.value)
     }
 }

@@ -20,8 +20,11 @@ private val probes = listOf(
     "https://www.gstatic.com/generate_204",
 )
 
-/** Whether any of [probes] answers; desktop JVMs have no system connectivity signal. */
-fun desktopOnline(scope: CoroutineScope): StateFlow<Boolean> = pollOnline(scope) {
+/**
+ * Whether any of [probes] answers. A JVM has no connectivity signal of its own; on macOS the system's says when the
+ * network changed ([MacReachability]), and the probes run at once then.
+ */
+fun desktopOnline(scope: CoroutineScope): StateFlow<Boolean> = pollOnline(scope, changes = MacReachability.changes) {
     coroutineScope { probes.map { async { answers(it) } }.awaitAll().any { it } }
 }
 
