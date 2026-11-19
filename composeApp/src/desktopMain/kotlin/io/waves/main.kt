@@ -14,11 +14,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.awt.ComposeWindow
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
@@ -47,6 +42,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.Desktop
 import java.awt.Frame
+import java.awt.KeyboardFocusManager
 import java.awt.desktop.AppReopenedListener
 import javax.swing.SwingUtilities
 import kotlin.system.exitProcess
@@ -114,12 +110,33 @@ fun main() {
     var mainWindow: ComposeWindow? = null
     fun showMain() {
         mainVisible = true
-        mainWindow?.apply {
-            if (extendedState and Frame.ICONIFIED != 0) extendedState = extendedState and Frame.ICONIFIED.inv()
-            isVisible = true
-            toFront()
-            requestFocus()
+        // Asked for from the menu bar popover, Waves isn't the active app (the popover doesn't make it one): a
+        // window brought forward then stays behind the active app's, and isn't given the keyboard.
+        runCatching {
+            val desktop = Desktop.getDesktop()
+            if (desktop.isSupported(Desktop.Action.APP_REQUEST_FOREGROUND)) desktop.requestForeground(true)
         }
+        fun front() {
+            mainWindow?.apply {
+                if (extendedState and Frame.ICONIFIED != 0) extendedState = extendedState and Frame.ICONIFIED.inv()
+                isVisible = true
+                toFront()
+                requestFocus()
+            }
+        }
+        front()
+        // Again once Waves is the active app: focus asked for before that isn't given.
+        SwingUtilities.invokeLater(::front)
+    }
+    // Cmd+W closes the main window whichever part of it has the keyboard; the window's own key handler only hears
+    // of keys while its content has it, which it may not after the window was hidden and shown again.
+    var closeMain: () -> Unit = {}
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher { event ->
+        val window = mainWindow
+        val closes = event.id == java.awt.event.KeyEvent.KEY_PRESSED && event.isMetaDown &&
+            event.keyCode == java.awt.event.KeyEvent.VK_W && window != null && window.isActive
+        if (closes) closeMain()
+        closes
     }
     if (keepRunningWhenClosed && Desktop.isDesktopSupported()) {
         Desktop.getDesktop().addAppEventListener(AppReopenedListener { showMain() })
@@ -136,16 +153,13 @@ fun main() {
                 exitApplication()
             }
         }
+        closeMain = close
         Window(
             onCloseRequest = close,
             visible = mainVisible,
             title = "Waves",
             icon = appIcon,
             state = windowState,
-            onKeyEvent = { event ->
-                val closeShortcut = event.type == KeyEventType.KeyDown && event.isMetaPressed && event.key == Key.W
-                closeShortcut.also { if (it) close() }
-            },
         ) {
             LaunchedEffect(window) { mainWindow = window }
             LaunchedEffect(windowState) {
