@@ -324,12 +324,23 @@ internal fun Modifier.topDivider(show: Boolean, tint: () -> Float = { 0f }): Mod
  * neighbouring ripples meet along the line. With [above] (and no divider of its own) it reaches up under a divider
  * just above the row, one a list draws over its top ([ListDivider]) or one in the item before, and its top edge
  * follows that divider's zigzag, so it meets the line whether or not anything clips the list to it. Only the row
- * itself takes taps.
+ * itself takes taps. Held, it calls [onLongClick].
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun Modifier.zigzagClickable(top: Boolean, bottom: Boolean, above: Boolean = false, onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
+internal fun Modifier.zigzagClickable(
+    top: Boolean,
+    bottom: Boolean,
+    above: Boolean = false,
+    onLongClick: () -> Unit = {},
+    /** False ends a press under way (its ripple goes) and takes no more taps. */
+    enabled: Boolean = true,
+    /** A press effect of the row's own, drawn in place of the ripple and under the row's content; null for the ripple. */
+    wave: PressWave? = null,
+    onClick: () -> Unit,
+): Modifier {
+    val interaction = wave?.interactions ?: remember { MutableInteractionSource() }
+    val color = MaterialTheme.colorScheme.primary
     val reach = if (bottom) ListDividerHeight else 0.dp
     val rise = if (above) ListDividerHeight else 0.dp
     val shape = remember(top, above, reach) { ZigzagEdgesShape(top || above, reach) }
@@ -345,7 +356,10 @@ internal fun Modifier.zigzagClickable(top: Boolean, bottom: Boolean, above: Bool
             }
         }
         .clip(shape)
-        .indication(interaction, ripple(color = MaterialTheme.colorScheme.primary))
+        .then(
+            if (wave != null) Modifier.drawBehind { with(wave) { draw(Offset(0f, rise.toPx()), color) } }
+            else Modifier.indication(interaction, ripple(color = color)),
+        )
         .layout { measurable, constraints ->
             val up = rise.roundToPx()
             val extra = up + reach.roundToPx()
@@ -353,8 +367,8 @@ internal fun Modifier.zigzagClickable(top: Boolean, bottom: Boolean, above: Bool
             val placeable = measurable.measure(constraints.copy(minHeight = 0, maxHeight = maxHeight))
             layout(placeable.width, placeable.height + extra) { placeable.place(0, up) }
         }
-        // A long press does nothing: held, then let go, it doesn't count as a tap either.
-        .combinedClickable(interactionSource = interaction, indication = null, onClick = onClick, onLongClick = {})
+        // A long press does nothing unless asked for: held, then let go, it doesn't count as a tap either.
+        .combinedClickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick, onLongClick = onLongClick)
 }
 
 /** Everything below a [ListDivider] drawn at the top: clips content scrolling up under the divider to its line. */

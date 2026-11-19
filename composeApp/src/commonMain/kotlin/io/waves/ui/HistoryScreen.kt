@@ -2,11 +2,47 @@ package io.waves.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.drawscope.clipRect
+import kotlinx.coroutines.launch
+import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.animation.core.animateFloatAsState
+import io.waves.model.Episode
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +66,7 @@ import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -37,12 +74,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.runtime.collectAsState
@@ -58,6 +98,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.waves.currentTimeMillis
 import io.waves.platformName
+import io.waves.model.EpisodeId
 import io.waves.model.HistoryEntry
 import io.waves.sync.AuthState
 import io.waves.sync.SyncStatus
@@ -76,6 +117,13 @@ fun HistoryScreen(
     downloads: DownloadsState? = null,
     /** Pulling the list down syncs through it while signed in with sync on; null leaves out pull to sync. */
     sync: SettingsState? = null,
+    /** The episode behind an entry, for its download button; none when it is no longer known. */
+    episodeOf: suspend (HistoryEntry) -> Episode? = { null },
+    /** The episode playing now (not one paused), whose button pauses it. */
+    playing: EpisodeId? = null,
+    onPause: () -> Unit = {},
+    /** Marks an entry's episode played, or not played again. */
+    onSetPlayed: (HistoryEntry, Boolean) -> Unit = { _, _ -> },
 ) {
     val ui by state.state.collectAsState()
     val syncUi = sync?.let { it.state.collectAsState().value }
@@ -97,6 +145,22 @@ fun HistoryScreen(
                         ?: listState.firstVisibleItemIndex
                     dayAtTop(ui, if (isDayLabel(ui, below)) below - 1 else below)
                 }
+            }
+            // A list holds on to the row it shows first. So a row moving or arriving above the first one (an episode
+            // played again) would land out of sight above it: resting at its top, the list stays there instead. And
+            // further down, when the row it shows first is the one that moves to the top, the list would go up
+            // with it: it stays where it is, and the rows around close the gap.
+            val firstKey = ui.days.firstOrNull()?.entries?.firstOrNull()?.episodeId
+            val shownFirst = remember { mutableStateOf(firstKey) }
+            if (shownFirst.value != firstKey) {
+                val index = listState.firstVisibleItemIndex
+                val offset = listState.firstVisibleItemScrollOffset
+                val held = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key
+                when {
+                    index == 0 && offset == 0 -> listState.requestScrollToItem(0)
+                    firstKey != null && held == entryKey(firstKey) -> listState.requestScrollToItem(index, offset)
+                }
+                SideEffect { shownFirst.value = firstKey }
             }
             // Pinned like Home's shelf, its divider on the same line.
             Column(Modifier.height(ShelfBandHeight)) {
@@ -129,9 +193,9 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxSize(),
                         gapTop = ListDividerHeight,
                         progress = pull,
-                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, list) }
+                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, list) }
                 } else {
-                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, list)
+                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, list)
                 }
                 ListDivider(tint = { pull.value })
             }
@@ -148,8 +212,22 @@ private fun HistoryList(
     downloads: DownloadsState?,
     listState: LazyListState,
     today: LocalDate,
+    episodeOf: suspend (HistoryEntry) -> Episode?,
+    playing: EpisodeId?,
+    onPause: () -> Unit,
+    onSetPlayed: (HistoryEntry, Boolean) -> Unit,
+    onRemove: (HistoryEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The row turned over, and to which of its other sides: tapped, to its buttons; held, to its deletion. It turns
+    // back by itself when left alone, as its highlight fades out.
+    var turned by remember { mutableStateOf<Pair<EpisodeId, RowSide>?>(null) }
+    // Scrolled out of sight, a turned row turns back: it's met the right way up when scrolled back.
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            turned?.first?.let { id -> listState.layoutInfo.visibleItemsInfo.any { it.key == entryKey(id) } }
+        }.collect { inSight -> if (inSight == false) turned = null }
+    }
     LazyColumn(
         modifier.fillMaxSize()
             .verticalFadingEdge(fadeLength = 0.dp, bottomFadeLength = floatingBarBottomGap()),
@@ -174,50 +252,192 @@ private fun HistoryList(
                 item(key = day.date.toString()) {
                     SectionLabel(
                         dayLabel(day.date, today),
-                        Modifier.contentInset().padding(start = ScreenGutter, end = ScreenGutter, top = 10.dp, bottom = 4.dp),
+                        Modifier.animateItem().contentInset().padding(start = ScreenGutter, end = ScreenGutter, top = 10.dp, bottom = 4.dp),
                     )
                 }
             }
-            itemsIndexed(day.entries) { index, entry ->
+            // Keyed by episode (each is listed once), so a row that comes, goes or moves up animates there.
+            itemsIndexed(day.entries, key = { _, entry -> entryKey(entry.episodeId) }) { index, entry ->
                 val thisDevice = entry.deviceId == deviceId
-                Row(
-                    Modifier.fillMaxWidth().topDivider(index > 0)
-                        // The very first row sits right under the pinned divider: its ripple reaches up to the line.
+                val played = ui.played[entry.episodeId]
+                val flip by animateFloatAsState(if (turned?.first == entry.episodeId) 180f else 0f, tween(FLIP_MS), label = "flip")
+                // The row's own press effect, in place of the ripple, which goes out by itself and can't be kept on
+                // (each attempt to hand over from it made the colour rise and fall): a wave from the touch fills the
+                // row, stays while the row turns over, and once it has turned empties from left to right; the row starts
+                // turning back by itself once it has all emptied, unless used first.
+                val isTurned = turned?.first == entry.episodeId
+                val press = rememberPressWave(plainTap = false)
+                val glow = press.glow
+                val drain = press.drain
+                val pressed = press.pressed
+                // Whether the row turned back by itself, so the fade carries on as it was going.
+                var timedOut by remember { mutableStateOf(false) }
+                LaunchedEffect(isTurned, pressed) {
+                    when {
+                        isTurned -> {
+                            timedOut = false
+                            glow.animateTo(1f, tween(PressWave.GLOW_IN_MS))
+                            delay(FLIP_MS.toLong())
+                            drain.animateTo(TURN_BACK_AT, tween((LIT_FADE_MS * (TURN_BACK_AT - drain.value)).toInt(), easing = LinearEasing))
+                            if (turned?.first == entry.episodeId) {
+                                timedOut = true
+                                turned = null
+                            }
+                        }
+                        pressed -> {
+                            drain.snapTo(0f)
+                            glow.animateTo(1f, tween(PressWave.GLOW_IN_MS))
+                        }
+                        timedOut -> {
+                            drain.animateTo(1f, tween((LIT_FADE_MS * (1f - drain.value)).toInt(), easing = LinearEasing))
+                            glow.snapTo(0f)
+                            drain.snapTo(0f)
+                        }
+                        else -> {
+                            glow.animateTo(0f, tween(FLIP_MS))
+                            drain.snapTo(0f)
+                        }
+                    }
+                }
+                // The side last turned to, still shown while the row turns back.
+                var side by remember { mutableStateOf(RowSide.Actions) }
+                turned?.takeIf { it.first == entry.episodeId }?.let { side = it.second }
+                // Tapped, the row turns over to what can be done with its episode; held, to deleting its record.
+                Box(
+                    Modifier.animateItem().fillMaxWidth().topDivider(index > 0)
                         .zigzagClickable(
                             top = index > 0, bottom = index < day.entries.lastIndex,
                             above = index == 0 && day == ui.days.first(),
-                        ) { onPlay(entry) }
-                        .contentInset()
-                        .padding(horizontal = ScreenGutter, vertical = ListRowVerticalPadding),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(ListRowGap),
+                            onLongClick = { turned = entry.episodeId to RowSide.Deletion },
+                            // Turned over, the row's other side takes the taps.
+                            enabled = flip == 0f && turned?.first != entry.episodeId,
+                            wave = press,
+                        ) { turned = entry.episodeId to RowSide.Actions },
                 ) {
-                    Box {
-                        Icon(
-                            if (thisDevice) ThisDeviceIcon else Icons.Default.Devices,
-                            contentDescription = if (thisDevice) "This device" else "Other device",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                        )
-                        if (downloads != null) {
-                            HistoryDownloadState(entry, downloads, Modifier.align(Alignment.BottomEnd).offset(5.dp, 5.dp))
+                    Row(
+                        Modifier.fillMaxWidth()
+                            // Only what's on the row turns over; its divider and press ripple stay as they are.
+                            .graphicsLayer {
+                                rotationX = flip
+                                cameraDistance = 16f * density
+                                alpha = if (flip > 90f) 0f else 1f
+                            }
+                            .contentInset()
+                            .padding(horizontal = ScreenGutter, vertical = ListRowVerticalPadding),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(ListRowGap),
+                    ) {
+                        Box {
+                            Icon(
+                                if (thisDevice) ThisDeviceIcon else Icons.Default.Devices,
+                                contentDescription = if (thisDevice) "This device" else "Other device",
+                                modifier = Modifier.size(24.dp),
+                                // This device's sessions stand out by the icon's colour.
+                                tint = if (thisDevice) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            )
+                            if (downloads != null) {
+                                HistoryDownloadState(entry, downloads, Modifier.align(Alignment.BottomEnd).offset(5.dp, 5.dp))
+                            }
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                entry.episodeTitle, style = listTitleStyle(),
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            )
+                            // How much of the episode has been played (a tick once all of it), and the show.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (played == 100) {
+                                    Icon(
+                                        Icons.Rounded.Check, "Completed", Modifier.size(13.dp),
+                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    )
+                                    MetaText(" · ")
+                                } else if (played != null) {
+                                    MetaText("$played% · ")
+                                }
+                                MetaText(entry.podcastTitle, Modifier.weight(1f, fill = false))
+                            }
                         }
                     }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            entry.episodeTitle, style = listTitleStyle(),
-                            maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        )
-                        MetaText(
-                            "${entry.podcastTitle} · ${formatTime(entry.playedAtEpochMs)} · " +
-                                if (thisDevice) "This device" else entry.deviceId,
-                        )
+                    if (flip > 90f) {
+                        // The row's other side, upright once the turn is done, and over all of it, so nothing under it is tapped.
+                        val back = Modifier.matchParentSize()
+                            .graphicsLayer {
+                                rotationX = flip - 180f
+                                cameraDistance = 16f * density
+                            }
+                            .contentInset().padding(horizontal = ScreenGutter)
+                        if (side == RowSide.Deletion) {
+                            RowDeletion(
+                                onClose = { turned = null },
+                                onDelete = {
+                                    turned = null
+                                    onRemove(entry)
+                                },
+                                back,
+                            )
+                        } else {
+                            RowBack(onClose = { turned = null }, back) {
+                                val isPlaying = playing == entry.episodeId
+                                RowIconButton(
+                                    when {
+                                        isPlaying -> Icons.Rounded.Pause
+                                        played == 100 -> Icons.Rounded.Replay
+                                        else -> Icons.Rounded.PlayArrow
+                                    },
+                                    when {
+                                        isPlaying -> "Pause"
+                                        played == 100 -> "Replay"
+                                        else -> "Play"
+                                    },
+                                    onClick = {
+                                        if (isPlaying) onPause() else onPlay(entry)
+                                        turned = null
+                                    },
+                                )
+                                // Only to mark it played: a completed episode just starts over when played again.
+                                if (played != 100) {
+                                    RowIconButton(
+                                        Icons.Rounded.Check, "Mark played",
+                                        onClick = {
+                                            onSetPlayed(entry, true)
+                                            turned = null
+                                        },
+                                    )
+                                }
+                                // Only a download there is, to remove: History isn't where episodes are downloaded from.
+                                if (downloads != null) {
+                                    val control by remember(entry.episodeId) { downloads.control(entry.episodeId) }
+                                        .collectAsState(initial = DownloadControl.NotDownloaded)
+                                    if (control == DownloadControl.Downloaded) {
+                                        RowIconButton(
+                                            Icons.Outlined.DeleteOutline, "Remove download",
+                                            onClick = {
+                                                downloads.remove(entry.episodeId)
+                                                turned = null
+                                            },
+                                            // The download it removes, marked as on the device icon.
+                                            badge = {
+                                                DownloadStateIcon(
+                                                    DownloadControl.Downloaded, 14.dp,
+                                                    Modifier.background(MaterialTheme.colorScheme.surface, CircleShape).padding(1.5.dp),
+                                                )
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 }
+
+/** The key of an episode's row in the list. */
+private fun entryKey(id: EpisodeId): String = "episode $id"
 
 /** Whether the list's item at [index] is a day's label (every day's but the first's), as [HistoryList] lays them out. */
 private fun isDayLabel(ui: HistoryUiState, index: Int): Boolean {
@@ -266,7 +486,7 @@ private fun HistorySummary(
     }
 }
 
-/** A figure over its caption; with [onClick], a toggle that fills in while [selected]. */
+/** A figure over its caption; with [onClick], a toggle, marked in its top corner while [selected]. */
 @Composable
 private fun SummaryTile(
     value: String,
@@ -276,17 +496,27 @@ private fun SummaryTile(
     onClick: (() -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
-    val container by animateColorAsState(
-        if (selected) colors.primaryContainer else colors.onSurface.copy(alpha = 0.06f), label = "tile",
-    )
-    val content by animateColorAsState(if (selected) colors.onPrimaryContainer else colors.onSurface, label = "tile text")
-    val caption by animateColorAsState(
-        if (selected) colors.onPrimaryContainer.copy(alpha = 0.8f) else colors.onSurfaceVariant, label = "tile caption",
-    )
+    // The tile looks the same on and off: only the mark in its corner tells.
+    val container = colors.onSurface.copy(alpha = 0.06f)
+    val content = colors.onSurface
     val body: @Composable () -> Unit = {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            Text(value, style = MaterialTheme.typography.titleLarge, maxLines = 1)
-            Text(label, style = MaterialTheme.typography.bodySmall, color = caption, maxLines = 1)
+        Box {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(value, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                Text(label, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, maxLines = 1)
+            }
+            // A toggle says so, and which way it is: an empty ring while off, filled and ticked while on.
+            if (onClick != null) {
+                val fill by animateColorAsState(if (selected) colors.primary else Color.Transparent, label = "tile mark")
+                val ring by animateColorAsState(if (selected) colors.primary else colors.outline, label = "tile ring")
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(14.dp)
+                        .background(fill, CircleShape).border(1.5.dp, ring, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) Icon(Icons.Filled.Check, null, Modifier.size(10.dp), tint = colors.onPrimary)
+                }
+            }
         }
     }
     val shape = RoundedCornerShape(16.dp)
@@ -382,6 +612,120 @@ internal fun formatListened(ms: Long): String {
 /** History rows played here: a phone on Android, a computer on macOS. */
 internal val ThisDeviceIcon = if (platformName.startsWith("Android")) Icons.Default.PhoneAndroid else Icons.Default.Computer
 
+/** A row's other sides: what can be done with its episode, and deleting its record. */
+private enum class RowSide { Actions, Deletion }
+
+/** A row's other side: [content] in its middle; tapping anywhere else on it turns it back. */
+@Composable
+private fun RowBack(onClose: () -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    // Close together, without the room a button otherwise keeps around itself.
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        // Side by side in the middle of the row, [RowButtonPitch] apart by their middles, the icons' (a caption is
+        // centred under its icon, whatever its width).
+        Layout(content, modifier.pointerInput(Unit) { detectTapGestures { onClose() } }) { measurables, constraints ->
+            val width = constraints.maxWidth
+            val pitch = minOf(RowButtonPitch.roundToPx(), width / (measurables.size + 1))
+            // Each no wider than the room between two middles, so captions don't run into each other.
+            val room = if (measurables.size > 1) (pitch - 4.dp.roundToPx()).coerceAtLeast(0) else width
+            val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0, maxWidth = room)) }
+            val height = constraints.maxHeight.takeIf { it != Constraints.Infinity }
+                ?: (placeables.maxOfOrNull { it.height } ?: 0)
+            layout(width, height) {
+                placeables.forEachIndexed { i, p ->
+                    val middle = width / 2 + ((2 * i - (placeables.size - 1)) * pitch) / 2
+                    p.place(middle - p.width / 2, (height - p.height) / 2)
+                }
+            }
+        }
+    }
+}
+
+/** The side a held row turns to: whether to delete its record from the history. */
+@Composable
+private fun RowDeletion(onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    RowBack(onClose, modifier) {
+        // Outlined in red like the other side's circles, as wide as its label.
+        Surface(
+            onClick = onDelete,
+            shape = CircleShape,
+            color = Color.Transparent,
+            contentColor = colors.error,
+            border = BorderStroke(1.dp, colors.error),
+            modifier = Modifier.height(RowButtonSize),
+        ) {
+            Row(
+                Modifier.padding(start = 12.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // Fine strokes, to go with the hairline outline: a smaller icon draws its lines thinner, and the
+                // label is in the regular weight, not the labels' medium.
+                Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(17.dp))
+                Text(
+                    "Remove from history", maxLines = 1,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Normal),
+                )
+            }
+        }
+    }
+}
+
+private const val FLIP_MS = 360
+
+/** How long a turned row's highlight takes to empty, and so about how long the row waits to be used before it turns back. */
+private const val LIT_FADE_MS = 3_750
+
+/** How much of a turned row's highlight has emptied when the row starts turning back by itself. */
+private const val TURN_BACK_AT = 1f
+
+
+
+/**
+ * A button on a row's other side: [icon] in an outlined circle, all of them alike, with [description] as a caption
+ * under it when [caption]; in [color] for a removal.
+ */
+@Composable
+private fun RowIconButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    color: Color = Color.Unspecified,
+    caption: Boolean = false,
+    /** A mark at the circle's bottom end, saying what the button acts on. */
+    badge: (@Composable () -> Unit)? = null,
+) {
+    val colors = MaterialTheme.colorScheme
+    val ink = if (color.isSpecified) color else colors.onSurface
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Box {
+            Surface(
+                onClick = onClick,
+                shape = CircleShape,
+                color = Color.Transparent,
+                contentColor = ink,
+                border = BorderStroke(1.dp, if (color.isSpecified) color else colors.outlineVariant),
+                modifier = Modifier.size(RowButtonSize),
+            ) {
+                // A caption says it: no second description for screen readers.
+                Box(contentAlignment = Alignment.Center) { Icon(icon, description.takeUnless { caption }, Modifier.size(20.dp)) }
+            }
+            badge?.let { Box(Modifier.align(Alignment.BottomEnd).offset(3.dp, 3.dp)) { it() } }
+        }
+        if (caption) {
+            Text(
+                description, style = MaterialTheme.typography.labelSmall, maxLines = 2, textAlign = TextAlign.Center,
+                color = if (color.isSpecified) color else colors.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private val RowButtonSize = 36.dp
+
+/** How far apart a row's buttons are, middle to middle: 28 dp between two 36 dp circles. */
+private val RowButtonPitch = 64.dp
+
 /**
  * Badge on the device icon: the episode's download state when it has a local copy (or one is on the way);
  * nothing otherwise. The ring in the background colour keeps it apart from the icon underneath.
@@ -398,7 +742,7 @@ private fun HistoryDownloadState(entry: HistoryEntry, downloads: DownloadsState,
         is DownloadControl.Failed -> "Download failed"
     }
     DownloadStateIcon(
-        control, 12.dp,
+        control, 13.dp,
         modifier.background(MaterialTheme.colorScheme.surface, CircleShape).padding(1.5.dp)
             .semantics { contentDescription = description },
     )

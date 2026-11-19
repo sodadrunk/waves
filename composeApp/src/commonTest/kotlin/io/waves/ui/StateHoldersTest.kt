@@ -539,6 +539,15 @@ class HistoryStateTest {
         HistoryEntry(EpisodeId("f", "g$at"), "E$at", "P", at, device)
 
     @Test
+    fun percentPlayedIsFullOnlyOnceCompleted() {
+        val id = EpisodeId("f", "g")
+        assertEquals(42, HistoryState.percentPlayed(PlaybackProgress(id, 252_000, 600_000, false, 1)))
+        assertEquals(99, HistoryState.percentPlayed(PlaybackProgress(id, 600_000, 600_000, false, 1)))
+        assertEquals(100, HistoryState.percentPlayed(PlaybackProgress(id, 10_000, 600_000, true, 1)))
+        assertEquals(null, HistoryState.percentPlayed(PlaybackProgress(id, 10_000, 0, false, 1)))
+    }
+
+    @Test
     fun groupsByDayNewestFirst() {
         val day = 24 * 3600 * 1000L
         val days = HistoryState.groupByDay(listOf(entry(1_000), entry(day + 5), entry(day + 10, "other")), TimeZone.UTC)

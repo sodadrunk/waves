@@ -260,7 +260,7 @@ private const val FinalStretch = 0.94f
  * stronger on a dark one, where a light ink that faint all but vanishes.
  */
 @Composable
-private fun storedTint(ink: Color): Color =
+internal fun storedTint(ink: Color): Color =
     ink.copy(alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.22f else 0.1f)
 
 /** An arrow come down onto a tray, in fine strokes: a downloaded episode. */

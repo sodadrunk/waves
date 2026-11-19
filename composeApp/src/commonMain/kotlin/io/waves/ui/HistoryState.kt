@@ -2,6 +2,7 @@ package io.waves.ui
 
 import io.waves.currentTimeMillis
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.Flow
@@ -39,6 +40,8 @@ data class HistoryUiState(
     val downloaded: Int = 0,
     /** Whether the list is narrowed to the entries with a download here. */
     val downloadedOnly: Boolean = false,
+    /** How much of each episode has been played, in percent ([HistoryState.percentPlayed]); none for one with no telling. */
+    val played: Map<EpisodeId, Int> = emptyMap(),
     /** The clock when this was worked out; ticks over with the minutes, for ages shown beside the list. */
     val now: Long = currentTimeMillis(),
 )
@@ -51,18 +54,28 @@ data class HistoryUiState(
  * to the episodes with a download here ([toggleDownloadedOnly]).
  */
 class HistoryState(
-    library: LibraryRepository,
-    scope: CoroutineScope,
+    private val library: LibraryRepository,
+    private val scope: CoroutineScope,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
     private val clock: () -> Long = ::currentTimeMillis,
     /** This device's downloads, for the count and the downloaded-only list. */
     downloads: Flow<List<DownloadInfo>> = flowOf(emptyList()),
+    /** Told of a removal, so it syncs. */
+    private val onLocalChange: () -> Unit = {},
 ) {
     private val downloadedOnly = MutableStateFlow(false)
 
     /** Narrows the list to the entries with a download here, or widens it again. */
     fun toggleDownloadedOnly() {
         downloadedOnly.update { !it }
+    }
+
+    /** Takes [entry]'s episode out of the history, here and (synced) on the other devices; its progress stays. */
+    fun remove(entry: HistoryEntry) {
+        scope.launch {
+            library.removeFromHistory(entry.episodeId, clock())
+            onLocalChange()
+        }
     }
 
     /** Widens the list again: the narrowing is for a look, not kept once History is left. */
@@ -92,6 +105,7 @@ class HistoryState(
                 listenedThisWeekMs = thisWeek(all, now, timeZone),
                 downloaded = downloaded.size,
                 downloadedOnly = only,
+                played = progress.mapNotNull { p -> percentPlayed(p)?.let { p.episodeId to it } }.toMap(),
                 now = now,
             )
         }.stateIn(scope, SharingStarted.Eagerly, HistoryUiState())
@@ -101,6 +115,16 @@ class HistoryState(
     }
 
     companion object {
+        /**
+         * How far an episode has been played, in percent: 100 only once it is completed, and null when its length
+         * isn't known.
+         */
+        fun percentPlayed(progress: PlaybackProgress): Int? = when {
+            progress.completed -> 100
+            progress.durationMs <= 0 -> null
+            else -> (progress.positionMs * 100 / progress.durationMs).toInt().coerceIn(0, 99)
+        }
+
         fun groupByDay(entries: List<HistoryEntry>, timeZone: TimeZone): List<HistoryDay> =
             entries
                 .sortedByDescending { it.playedAtEpochMs }

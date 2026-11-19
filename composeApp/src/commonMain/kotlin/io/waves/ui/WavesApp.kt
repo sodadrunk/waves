@@ -149,7 +149,9 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         scope = scope,
         offline = deps.offline,
     )
-    val history = HistoryState(deps.library, scope, downloads = deps.downloads?.downloads ?: flowOf(emptyList()))
+    val history = HistoryState(
+        deps.library, scope, downloads = deps.downloads?.downloads ?: flowOf(emptyList()), onLocalChange = deps.onLocalChange,
+    )
     init {
         ListeningTracker(deps.player.state, deps.library, deps.deviceId, scope).start()
     }
@@ -383,7 +385,18 @@ private fun CurrentScreen(
                                 onPlay = app.playback::play,
                                 onPause = app.playback::pause,
                             )
-                            Tab.History -> HistoryScreen(app.history, deps.deviceId, playFromHistory, app.downloads, app.settings)
+                            Tab.History -> HistoryScreen(
+                                app.history, deps.deviceId, playFromHistory, app.downloads, app.settings,
+                                episodeOf = { deps.library.episode(it.episodeId) ?: youtubeEpisodeOf(it) },
+                                playing = playback.episode?.id?.takeIf { playback.isPlaying },
+                                onPause = app.playback::pause,
+                                onSetPlayed = { entry, played ->
+                                    scope.launch {
+                                        val episode = deps.library.episode(entry.episodeId) ?: youtubeEpisodeOf(entry)
+                                        if (episode != null) app.playback.setCompleted(episode, played)
+                                    }
+                                },
+                            )
                             Tab.Settings -> SettingsScreen(app.settings, deps.deviceId, app.downloads, app.updates)
                         }
                     }
