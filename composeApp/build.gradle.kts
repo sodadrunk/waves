@@ -290,4 +290,8 @@ tasks.named<Test>("desktopTest") {
     // A hung UI test (waitUntil doesn't time out in real time under skiko) must not stall the build.
     timeout.set(Duration.ofMinutes(5))
     systemProperty("skiko.data.path", layout.buildDirectory.dir("skiko").get().asFile.absolutePath)
+    // The UI tests open windows: without these the test JVM shows in the Dock ("GradleWorkerMain") and takes the
+    // keyboard from whatever app is in front, each run. The first is AWT's, the second JavaFX's.
+    systemProperty("apple.awt.UIElement", "true")
+    systemProperty("glass.taskbarApplication", "false")
 }
