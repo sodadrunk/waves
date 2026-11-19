@@ -16,6 +16,7 @@ import io.waves.download.DownloadManager
 import io.waves.download.PlaybackCache as ListeningCache
 import io.waves.model.EpisodeId
 import io.waves.net.ResponseCache
+import io.waves.offline.HistoryMediaPurge
 import io.waves.offline.LocalMediaCleaner
 import io.waves.offline.PlaybackCache
 import io.waves.offline.SqlPlaybackCache
@@ -121,6 +122,15 @@ class AppGraph(
         activeEpisode = activeEpisode,
         scope = appScope,
     )
+    /** Keeps this device's audio to the episodes in the history: removed ones lose theirs, and orphans are swept. */
+    val historyMedia = HistoryMediaPurge(
+        history = library.history,
+        removals = library.historyRemovals,
+        downloads = downloads,
+        cache = playbackCache,
+        activeEpisode = activeEpisode,
+        scope = appScope,
+    )
     val scheduler = SyncScheduler(
         sync, auth, appScope,
         enabled = combine(settings.settings, offline) { s, off -> s.syncEnabled && !off },
@@ -145,6 +155,7 @@ class AppGraph(
         started = true
         responseCacheDir?.let { dir -> appScope.launch(Dispatchers.Default) { ResponseCache.install(dir) } }
         cleaner.start()
+        historyMedia.start()
         scheduler.start()
         // Whole-file cache after a minute of listening. Its eviction waits while offline.
         ListeningCache(player.state, downloads, appScope, enabled = offline.map { !it }).start()

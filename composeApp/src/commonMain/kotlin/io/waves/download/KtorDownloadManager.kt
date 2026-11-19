@@ -215,6 +215,21 @@ class KtorDownloadManager(
         return n
     }
 
+    override suspend fun pruneStrayFiles(): Int {
+        // A transfer under way may be about to create its file.
+        if (activeLock.withLock { active.isNotEmpty() || caching.isNotEmpty() }) return 0
+        return withContext(ioContext) {
+            val dir = Path(directory)
+            if (!fs.exists(dir)) return@withContext 0
+            // Files first, then rows: a download's row is written before its file, so no file seen here is newer than
+            // the rows read after.
+            val files = fs.list(dir).filter { !it.name.startsWith(".") && fs.metadataOrNull(it)?.isRegularFile == true }
+            val kept = queries.all().executeAsList().flatMapTo(HashSet()) { listOf(it.filePath, it.filePath + PART_SUFFIX) }
+                .mapTo(HashSet()) { Path(it).name }
+            files.count { file -> (file.name !in kept).also { stray -> if (stray) fs.delete(file, mustExist = false) } }
+        }
+    }
+
     /** No download row yet, or a completed one whose file has gone missing. */
     private fun DownloadRow?.needsTransfer(): Boolean =
         this == null || (status == DownloadStatus.Done.name && !fs.exists(Path(filePath)))

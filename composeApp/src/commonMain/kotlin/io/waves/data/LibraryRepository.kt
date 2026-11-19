@@ -59,6 +59,9 @@ interface LibraryRepository {
      */
     suspend fun removeFromHistory(episodeId: EpisodeId, atEpochMs: Long) {}
 
+    /** Episodes taken out of the history, here or (synced) on other devices. */
+    val historyRemovals: Flow<List<io.waves.sync.HistoryRemoval>> get() = kotlinx.coroutines.flow.flowOf(emptyList())
+
     /** Snapshot used by sync; includes unsubscribe tombstones. */
     suspend fun exportSyncState(): io.waves.sync.SyncState
     /**

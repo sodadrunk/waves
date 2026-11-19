@@ -121,6 +121,19 @@ class KtorDownloadManagerTest {
         assertEquals(listOf(ep.id), m.downloads.first().map { it.episodeId })
     }
 
+    @Test fun strayFilesGoAndDownloadsStay() = runBlocking<Unit> {
+        val m = newManager()
+        val ep = episode()
+        m.enqueue(ep)
+        val done = m.await(ep.id) { it?.status == DownloadStatus.Done }!!
+        File(dir, "left-by-a-crash.mp3").writeText("x")
+        File(dir, "half.m4a.part").writeText("x")
+        File(dir, ".cache-index").writeText("") // the manager's own, kept
+        withTimeout(10_000) { while (m.pruneStrayFiles() == 0) delay(20) } // once the finished transfer has let go
+        assertEquals(listOf(".cache-index", File(done.filePath).name).sorted(), files())
+        assertEquals(0, m.pruneStrayFiles())
+    }
+
     @Test fun locatedSourceDecidesTheFileExtension() = runBlocking<Unit> {
         val watch = "https://www.youtube.com/watch?v=firstVideo1"
         var source = "https://ts.example/audio/firstVideo1.mp3?key=k"

@@ -38,6 +38,12 @@ interface DownloadManager {
     suspend fun deleteDownloads(episodeIds: Collection<EpisodeId>): Int
 
     /**
+     * Deletes files in the downloads folder that no download is for (left by a crash, or by a row removed without its
+     * file); returns how many.
+     */
+    suspend fun pruneStrayFiles(): Int = 0
+
+    /**
      * Caches [episode]'s audio in the background so later plays don't stream it. A cached episode is not a
      * download: it isn't listed in [downloads] or [state], and [evictCache] removes it once it goes unplayed.
      * [enqueue] takes the cached (or partially cached) file over instead of fetching it again. No-op when the

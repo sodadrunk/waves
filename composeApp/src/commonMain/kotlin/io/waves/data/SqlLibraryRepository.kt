@@ -181,6 +181,9 @@ class SqlLibraryRepository(
         historyQ.insertHistory(entry)
     }
 
+    override val historyRemovals: Flow<List<HistoryRemoval>> =
+        settings.get(HISTORY_REMOVED_KEY).asFlow().mapToOneOrNull(ioContext).map { decodeHistoryRemoved(it) }
+
     override suspend fun removeFromHistory(episodeId: EpisodeId, atEpochMs: Long) = write {
         db.transaction { applyHistoryRemovals(listOf(HistoryRemoval(episodeId, atEpochMs))) }
     }
