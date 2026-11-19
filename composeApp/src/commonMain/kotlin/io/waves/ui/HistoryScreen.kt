@@ -29,7 +29,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.produceState
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.BorderStroke
@@ -119,9 +118,8 @@ fun HistoryScreen(
     sync: SettingsState? = null,
     /** The episode behind an entry, for its download button; none when it is no longer known. */
     episodeOf: suspend (HistoryEntry) -> Episode? = { null },
-    /** The episode playing now (not one paused), whose button pauses it. */
-    playing: EpisodeId? = null,
-    onPause: () -> Unit = {},
+    /** Episodes on air: no progress, no replay and nothing to mark played. */
+    live: Set<EpisodeId> = emptySet(),
     /** Marks an entry's episode played, or not played again. */
     onSetPlayed: (HistoryEntry, Boolean) -> Unit = { _, _ -> },
 ) {
@@ -198,9 +196,9 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxSize(),
                         gapTop = ListDividerHeight,
                         progress = pull,
-                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, rowKeys::keyOf, list) }
+                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, live, onSetPlayed, state::remove, rowKeys::keyOf, list) }
                 } else {
-                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, rowKeys::keyOf, list)
+                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, live, onSetPlayed, state::remove, rowKeys::keyOf, list)
                 }
                 ListDivider(tint = { pull.value })
             }
@@ -218,8 +216,7 @@ private fun HistoryList(
     listState: LazyListState,
     today: LocalDate,
     episodeOf: suspend (HistoryEntry) -> Episode?,
-    playing: EpisodeId?,
-    onPause: () -> Unit,
+    live: Set<EpisodeId>,
     onSetPlayed: (HistoryEntry, Boolean) -> Unit,
     onRemove: (HistoryEntry) -> Unit,
     /** The key of an episode's row in the list ([RowKeys]). */
@@ -266,7 +263,8 @@ private fun HistoryList(
             // Keyed by episode (each is listed once), so a row that comes, goes or moves up animates there.
             itemsIndexed(day.entries, key = { _, entry -> keyOf(entry.episodeId) }) { index, entry ->
                 val thisDevice = entry.deviceId == deviceId
-                val played = ui.played[entry.episodeId]
+                // A stream on air has no place in it to have got to, nor an end to have reached.
+                val played = ui.played[entry.episodeId].takeIf { entry.episodeId !in live }
                 val flip by animateFloatAsState(if (turned?.first == entry.episodeId) 180f else 0f, tween(FLIP_MS), label = "flip")
                 // The row's own press effect, in place of the ripple, which goes out by itself and can't be kept on
                 // (each attempt to hand over from it made the colour rise and fall): a wave from the touch fills the
@@ -386,25 +384,18 @@ private fun HistoryList(
                             )
                         } else {
                             RowBack(onClose = { turned = null }, back) {
-                                val isPlaying = playing == entry.episodeId
+                                // Always to play: the one playing already just carries on (the player has the pause).
                                 RowIconButton(
-                                    when {
-                                        isPlaying -> Icons.Rounded.Pause
-                                        played == 100 -> Icons.Rounded.Replay
-                                        else -> Icons.Rounded.PlayArrow
-                                    },
-                                    when {
-                                        isPlaying -> "Pause"
-                                        played == 100 -> "Replay"
-                                        else -> "Play"
-                                    },
+                                    if (played == 100) Icons.Rounded.Replay else Icons.Rounded.PlayArrow,
+                                    if (played == 100) "Replay" else "Play",
                                     onClick = {
-                                        if (isPlaying) onPause() else onPlay(entry)
+                                        onPlay(entry)
                                         turned = null
                                     },
                                 )
-                                // Only to mark it played: a completed episode just starts over when played again.
-                                if (played != 100) {
+                                // Only to mark it played: a completed episode just starts over when played again, and
+                                // a stream on air has no end to reach.
+                                if (played != 100 && entry.episodeId !in live) {
                                     RowIconButton(
                                         Icons.Rounded.Check, "Mark played",
                                         onClick = {
