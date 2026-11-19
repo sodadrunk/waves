@@ -37,6 +37,10 @@ class FakeLibrary(initial: SyncState = SyncState()) : LibraryRepository {
         stateFlow.value = stateFlow.value.copy(history = stateFlow.value.history + entry)
     }
 
+    override suspend fun removeFromHistory(episodeId: EpisodeId, atEpochMs: Long) {
+        stateFlow.value = SyncMerge.merge(stateFlow.value, SyncState(historyRemoved = listOf(HistoryRemoval(episodeId, atEpochMs))))
+    }
+
     override suspend fun exportSyncState(): SyncState {
         onExport(exports++)
         return stateFlow.value

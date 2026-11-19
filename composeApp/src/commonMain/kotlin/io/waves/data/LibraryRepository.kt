@@ -53,6 +53,12 @@ interface LibraryRepository {
     suspend fun saveProgress(progress: PlaybackProgress)
     suspend fun addHistory(entry: HistoryEntry)
 
+    /**
+     * Takes [episodeId] out of the history: its sessions up to [atEpochMs], on every device once synced
+     * ([io.waves.sync.HistoryRemoval]). Its progress stays.
+     */
+    suspend fun removeFromHistory(episodeId: EpisodeId, atEpochMs: Long) {}
+
     /** Snapshot used by sync; includes unsubscribe tombstones. */
     suspend fun exportSyncState(): io.waves.sync.SyncState
     /**

@@ -18,5 +18,8 @@ VALUES (?, ?, ?, ?, ?, ?);
 all:
 SELECT * FROM history ORDER BY playedAt DESC, id DESC;
 
+deleteEpisodeUpTo:
+DELETE FROM history WHERE feedUrl = ? AND guid = ? AND playedAt <= ?;
+
 deleteAll:
 DELETE FROM history;

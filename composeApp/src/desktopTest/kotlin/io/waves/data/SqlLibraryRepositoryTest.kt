@@ -9,6 +9,7 @@ import io.waves.model.HistoryEntry
 import io.waves.model.PlaybackProgress
 import io.waves.model.Podcast
 import io.waves.sync.SubscriptionRecord
+import io.waves.sync.HistoryRemoval
 import io.waves.sync.SyncState
 import io.waves.youtube.YoutubeUrls
 import kotlinx.coroutines.Dispatchers
@@ -328,6 +329,25 @@ class SqlLibraryRepositoryTest {
         repo.addHistory(shared)
         repo.importSyncState(SyncState(history = listOf(shared, remote)))
         assertEquals(listOf(remote, shared, local), repo.history.first())
+    }
+
+    @Test fun removedHistoryStaysGoneAndGoesOutWithSync() = runBlocking<Unit> {
+        val old = HistoryEntry(id, "Ep", "Pod", 100, "dev1")
+        val other = HistoryEntry(EpisodeId("https://a/feed", "g2"), "Other", "Pod", 150, "dev1")
+        repo.addHistory(old)
+        repo.addHistory(other)
+        repo.removeFromHistory(id, 200)
+        assertEquals(listOf(other), repo.history.first())
+        assertEquals(listOf(HistoryRemoval(id, 200)), repo.exportSyncState().historyRemoved)
+
+        // Another device still has the session, and one from after the removal: only that one comes in.
+        val again = HistoryEntry(id, "Ep", "Pod", 300, "dev2")
+        repo.importSyncState(SyncState(history = listOf(old, again)))
+        assertEquals(listOf(again, other), repo.history.first())
+
+        // A removal made elsewhere takes the sessions out here.
+        repo.importSyncState(SyncState(historyRemoved = listOf(HistoryRemoval(other.episodeId, 400))))
+        assertEquals(listOf(again), repo.history.first())
     }
 
     @Test fun flowsEmitOnChanges() = runBlocking<Unit> {

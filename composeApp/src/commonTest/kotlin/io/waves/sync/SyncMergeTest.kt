@@ -71,6 +71,21 @@ class SyncMergeTest {
     }
 
     @Test
+    fun aRemovalTakesOutAnEpisodesSessionsUpToItOnEveryDevice() {
+        val before = hist(ep(guid = "1"), 100)
+        val elsewhere = hist(ep(guid = "1"), 150, device = "d2")
+        val again = hist(ep(guid = "1"), 300)
+        val other = hist(ep(guid = "2"), 120)
+        val removal = HistoryRemoval(ep(guid = "1"), 200)
+        val m = SyncMerge.merge(
+            SyncState(history = listOf(before, other), historyRemoved = listOf(removal, HistoryRemoval(ep(guid = "1"), 50))),
+            SyncState(history = listOf(before, elsewhere, again)), // a device that hasn't heard of the removal
+        )
+        assertEquals(listOf(again, other), m.history)
+        assertEquals(listOf(removal), m.historyRemoved)
+    }
+
+    @Test
     fun historyUnionDedupedAndSortedNewestFirst() {
         val h1 = hist(ep(guid = "1"), 100)
         val h2 = hist(ep(guid = "2"), 200)
@@ -163,6 +178,7 @@ class SyncMergeTest {
             history = List(r.nextInt(0, historyMax)) {
                 hist(ep(feeds.random(r), guids.random(r)), r.nextLong(0, 10), listOf("d1", "d2").random(r), listOf("x", "y").random(r))
             },
+            historyRemoved = List(r.nextInt(0, 3)) { HistoryRemoval(ep(feeds.random(r), guids.random(r)), r.nextLong(0, 10)) },
         )
     }
 

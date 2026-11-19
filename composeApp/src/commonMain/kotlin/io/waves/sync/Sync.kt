@@ -9,7 +9,7 @@ import kotlinx.serialization.Serializable
 /**
  * Everything that syncs between devices, stored as one JSON file in the user's Google Drive appDataFolder.
  * Merge rules: subscriptions LWW per feedUrl (tombstones via subscribed=false), progress LWW per episode,
- * history = union deduplicated by (episodeId, playedAt, deviceId), archive = union by episode, show settings LWW per
+ * history = union deduplicated by (episodeId, playedAt, deviceId) less what was removed since, archive = union by episode, show settings LWW per
  * feedUrl, listening = the larger total per (device, day).
  */
 @Serializable
@@ -27,6 +27,21 @@ data class SyncState(
     val showSettings: List<ShowSettingsRecord> = emptyList(),
     /** Time spent listening, per device and day. A new top-level key, so files without it still read. */
     val listening: List<ListeningRecord> = emptyList(),
+    /**
+     * Episodes taken out of the history, so a removal reaches the other devices and their copies don't bring the
+     * entries back. A new top-level key, so files without it still read.
+     */
+    val historyRemoved: List<HistoryRemoval> = emptyList(),
+)
+
+/**
+ * [episodeId] was removed from the history at [removedAtEpochMs]: its sessions up to then are gone on every device.
+ * Played again later, it is listed again.
+ */
+@Serializable
+data class HistoryRemoval(
+    val episodeId: io.waves.model.EpisodeId,
+    val removedAtEpochMs: Long,
 )
 
 /** How long [deviceId] played audio on [day] (its local date, ISO `yyyy-MM-dd`); only ever grows. */

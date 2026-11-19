@@ -11,6 +11,7 @@ import io.waves.model.EpisodeId
 import io.waves.model.HistoryEntry
 import io.waves.model.PlaybackProgress
 import io.waves.model.Podcast
+import io.waves.sync.HistoryRemoval
 import io.waves.sync.ListeningRecord
 import io.waves.sync.ShowSettingsRecord
 import io.waves.sync.SubscriptionRecord
@@ -180,6 +181,20 @@ class SqlLibraryRepository(
         historyQ.insertHistory(entry)
     }
 
+    override suspend fun removeFromHistory(episodeId: EpisodeId, atEpochMs: Long) = write {
+        db.transaction { applyHistoryRemovals(listOf(HistoryRemoval(episodeId, atEpochMs))) }
+    }
+
+    /** Records [removals] with those kept, and deletes the sessions they take out. In a transaction. */
+    private fun applyHistoryRemovals(removals: List<HistoryRemoval>): List<HistoryRemoval> {
+        val stored = decodeHistoryRemoved(settings.get(HISTORY_REMOVED_KEY).executeAsOneOrNull())
+        if (removals.isEmpty()) return stored
+        val merged = SyncMerge.mergeHistoryRemovals(stored + removals)
+        if (merged != stored) settings.put(HISTORY_REMOVED_KEY, showSettingsJson.encodeToString(historyRemovedSerializer, merged))
+        for (r in removals) historyQ.deleteEpisodeUpTo(r.episodeId.feedUrl, r.episodeId.guid, r.removedAtEpochMs)
+        return merged
+    }
+
     override suspend fun exportSyncState(): SyncState = withContext(ioContext) {
         db.transactionWithResult {
             SyncState(
@@ -197,13 +212,15 @@ class SqlLibraryRepository(
                     .flatMap { p -> episodesQ.byFeed(p.feedUrl).executeAsList().map { it.toModel() } },
                 showSettings = decodeShowSettings(settings.get(SHOW_SETTINGS_KEY).executeAsOneOrNull()),
                 listening = decodeListening(settings.get(LISTENING_KEY).executeAsOneOrNull()),
+                historyRemoved = decodeHistoryRemoved(settings.get(HISTORY_REMOVED_KEY).executeAsOneOrNull()),
             )
         }
     }
 
     /**
-     * Merges [state] into local data (never deletes): subscriptions and progress are applied per key only if
-     * they win under [SyncMerge.supersedes] (the same order the sync merge uses), history is unioned.
+     * Merges [state] into local data (deleting only history another device removed): subscriptions and progress are applied per key only if
+     * they win under [SyncMerge.supersedes] (the same order the sync merge uses), history is unioned, less what
+     * was removed from it.
      * Runs in one transaction, so a concurrent local write either lands before (and is compared against)
      * or after (and is kept as is).
      */
@@ -230,7 +247,9 @@ class SqlLibraryRepository(
                 val stored = progressQ.byId(incoming.episodeId.feedUrl, incoming.episodeId.guid).executeAsOneOrNull()?.toModel()
                 if (stored == null || SyncMerge.supersedes(incoming, stored)) progressQ.putProgress(incoming)
             }
-            state.history.forEach { historyQ.insertHistory(it) }
+            // What another device removed goes here too, and no copy of it comes back in.
+            val removed = applyHistoryRemovals(state.historyRemoved)
+            SyncMerge.withoutRemoved(state.history, removed).forEach { historyQ.insertHistory(it) }
             putShowSettings(state.showSettings, force = false)
             if (state.listening.isNotEmpty()) {
                 putListening(decodeListening(settings.get(LISTENING_KEY).executeAsOneOrNull()) + state.listening)
@@ -276,11 +295,17 @@ class SqlLibraryRepository(
         const val DEVICE_ID_KEY = "deviceId"
         const val SHOW_SETTINGS_KEY = "showSettings"
         const val LISTENING_KEY = "listening"
+        const val HISTORY_REMOVED_KEY = "historyRemoved"
 
         private val showSettingsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
         private val showSettingsSerializer = kotlinx.serialization.builtins.ListSerializer(ShowSettingsRecord.serializer())
 
         private val listeningSerializer = kotlinx.serialization.builtins.ListSerializer(ListeningRecord.serializer())
+
+        private val historyRemovedSerializer = kotlinx.serialization.builtins.ListSerializer(HistoryRemoval.serializer())
+
+        private fun decodeHistoryRemoved(value: String?): List<HistoryRemoval> =
+            value?.let { runCatching { showSettingsJson.decodeFromString(historyRemovedSerializer, it) }.getOrNull() }.orEmpty()
 
         private fun decodeListening(value: String?): List<ListeningRecord> =
             value?.let { runCatching { showSettingsJson.decodeFromString(listeningSerializer, it) }.getOrNull() }.orEmpty()

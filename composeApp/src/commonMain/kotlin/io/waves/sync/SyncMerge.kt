@@ -22,15 +22,35 @@ object SyncMerge {
     /** Archived episodes kept, newest first: years of a daily stream, at well under a megabyte gzipped. */
     const val ARCHIVE_CAP = 2000
 
-    fun merge(a: SyncState, b: SyncState): SyncState = SyncState(
-        version = maxOf(a.version, b.version),
-        subscriptions = mergeSubscriptions(a.subscriptions + b.subscriptions),
-        progress = mergeProgress(a.progress + b.progress),
-        history = mergeHistory(a.history + b.history),
-        archive = mergeArchive(a.archive + b.archive),
-        showSettings = mergeShowSettings(a.showSettings + b.showSettings),
-        listening = mergeListening(a.listening + b.listening),
-    )
+    fun merge(a: SyncState, b: SyncState): SyncState {
+        val removed = mergeHistoryRemovals(a.historyRemoved + b.historyRemoved)
+        return SyncState(
+            version = maxOf(a.version, b.version),
+            subscriptions = mergeSubscriptions(a.subscriptions + b.subscriptions),
+            progress = mergeProgress(a.progress + b.progress),
+            history = mergeHistory(withoutRemoved(a.history + b.history, removed)),
+            archive = mergeArchive(a.archive + b.archive),
+            showSettings = mergeShowSettings(a.showSettings + b.showSettings),
+            listening = mergeListening(a.listening + b.listening),
+            historyRemoved = removed,
+        )
+    }
+
+    /** History removals kept, newest first. */
+    const val HISTORY_REMOVED_CAP = 2000
+
+    /** The latest removal of each episode. */
+    fun mergeHistoryRemovals(all: List<HistoryRemoval>): List<HistoryRemoval> =
+        all.groupBy { it.episodeId }.map { (_, removals) -> removals.maxBy { it.removedAtEpochMs } }
+            .sortedWith(compareByDescending<HistoryRemoval> { it.removedAtEpochMs }.thenBy { it.episodeId.toString() })
+            .take(HISTORY_REMOVED_CAP)
+
+    /** [history] less the sessions [removed] took out: those of a removed episode up to its removal. */
+    fun withoutRemoved(history: List<HistoryEntry>, removed: List<HistoryRemoval>): List<HistoryEntry> {
+        if (removed.isEmpty()) return history
+        val until = removed.associate { it.episodeId to it.removedAtEpochMs }
+        return history.filter { entry -> until[entry.episodeId]?.let { entry.playedAtEpochMs > it } ?: true }
+    }
 
     /** Canonical form of a single state (dedups and sorts); merge(s, s) == normalize(s). */
     fun normalize(s: SyncState): SyncState = merge(s, SyncState(version = s.version))
