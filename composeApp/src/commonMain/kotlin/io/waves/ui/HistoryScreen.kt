@@ -150,7 +150,7 @@ fun HistoryScreen(
             val rowKeys = remember { RowKeys() }
             rowKeys.update(ui, listState)
             // A list holds on to the row it shows first. So a row moving or arriving above the first one (an episode
-            // played again) would land out of sight above it: resting at its top, the list stays there instead. And
+            // played again) would land out of sight above it: showing its top, even partly, the list stays there. And
             // further down, when the row it shows first is the one that moves to the top, the list would go up
             // with it: it stays where it is, and the rows around close the gap.
             val firstKey = ui.days.firstOrNull()?.entries?.firstOrNull()?.episodeId
@@ -160,7 +160,9 @@ fun HistoryScreen(
                 val offset = listState.firstVisibleItemScrollOffset
                 val held = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key
                 when {
-                    index == 0 && offset == 0 -> listState.requestScrollToItem(0)
+                    // The first row in sight, if only partly: the list keeps that place, and the row arriving there
+                    // slides into it.
+                    index == 0 -> listState.requestScrollToItem(0, offset)
                     firstKey != null && held == rowKeys.keyOf(firstKey) -> listState.requestScrollToItem(index, offset)
                 }
                 SideEffect { shownFirst.value = firstKey }
