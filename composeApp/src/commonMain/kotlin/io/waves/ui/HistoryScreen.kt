@@ -146,6 +146,11 @@ fun HistoryScreen(
                     dayAtTop(ui, if (isDayLabel(ui, below)) below - 1 else below)
                 }
             }
+            // A row going somewhere out of sight (an episode played again, off to the top of a list scrolled down)
+            // would slide off the screen: it gets a new key instead, so it fades out where it was as the rows around
+            // close up, and is simply there at its new place.
+            val rowKeys = remember { RowKeys() }
+            rowKeys.update(ui, listState)
             // A list holds on to the row it shows first. So a row moving or arriving above the first one (an episode
             // played again) would land out of sight above it: resting at its top, the list stays there instead. And
             // further down, when the row it shows first is the one that moves to the top, the list would go up
@@ -158,7 +163,7 @@ fun HistoryScreen(
                 val held = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key
                 when {
                     index == 0 && offset == 0 -> listState.requestScrollToItem(0)
-                    firstKey != null && held == entryKey(firstKey) -> listState.requestScrollToItem(index, offset)
+                    firstKey != null && held == rowKeys.keyOf(firstKey) -> listState.requestScrollToItem(index, offset)
                 }
                 SideEffect { shownFirst.value = firstKey }
             }
@@ -193,9 +198,9 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxSize(),
                         gapTop = ListDividerHeight,
                         progress = pull,
-                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, list) }
+                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, rowKeys::keyOf, list) }
                 } else {
-                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, list)
+                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, playing, onPause, onSetPlayed, state::remove, rowKeys::keyOf, list)
                 }
                 ListDivider(tint = { pull.value })
             }
@@ -217,6 +222,8 @@ private fun HistoryList(
     onPause: () -> Unit,
     onSetPlayed: (HistoryEntry, Boolean) -> Unit,
     onRemove: (HistoryEntry) -> Unit,
+    /** The key of an episode's row in the list ([RowKeys]). */
+    keyOf: (EpisodeId) -> String,
     modifier: Modifier = Modifier,
 ) {
     // The row turned over, and to which of its other sides: tapped, to its buttons; held, to its deletion. It turns
@@ -225,7 +232,7 @@ private fun HistoryList(
     // Scrolled out of sight, a turned row turns back: it's met the right way up when scrolled back.
     LaunchedEffect(listState) {
         snapshotFlow {
-            turned?.first?.let { id -> listState.layoutInfo.visibleItemsInfo.any { it.key == entryKey(id) } }
+            turned?.first?.let { id -> listState.layoutInfo.visibleItemsInfo.any { it.key == keyOf(id) } }
         }.collect { inSight -> if (inSight == false) turned = null }
     }
     LazyColumn(
@@ -257,7 +264,7 @@ private fun HistoryList(
                 }
             }
             // Keyed by episode (each is listed once), so a row that comes, goes or moves up animates there.
-            itemsIndexed(day.entries, key = { _, entry -> entryKey(entry.episodeId) }) { index, entry ->
+            itemsIndexed(day.entries, key = { _, entry -> keyOf(entry.episodeId) }) { index, entry ->
                 val thisDevice = entry.deviceId == deviceId
                 val played = ui.played[entry.episodeId]
                 val flip by animateFloatAsState(if (turned?.first == entry.episodeId) 180f else 0f, tween(FLIP_MS), label = "flip")
@@ -436,8 +443,43 @@ private fun HistoryList(
     }
 }
 
-/** The key of an episode's row in the list. */
-private fun entryKey(id: EpisodeId): String = "episode $id"
+/**
+ * The keys of the list's episode rows. A row keeps its key as it moves within sight, so it slides there; one moved
+ * to a place out of sight gets a new one, so the list takes it as gone from where it was (it fades out, and the rows
+ * around close up) and new where it went, rather than sliding it off the screen.
+ */
+private class RowKeys {
+    private val generations = HashMap<EpisodeId, Int>()
+    private var positions: Map<EpisodeId, Int> = emptyMap()
+
+    fun keyOf(id: EpisodeId): String = "episode $id ${generations[id] ?: 0}"
+
+    /** Takes in [ui]'s rows, as [listState] shows the list before they're laid out. */
+    fun update(ui: HistoryUiState, listState: LazyListState) {
+        val now = positionsOf(ui)
+        if (now == positions) return
+        val visible = listState.layoutInfo.visibleItemsInfo
+        if (visible.isNotEmpty()) {
+            val inSight = visible.first().index..visible.last().index
+            for ((id, index) in now) {
+                val was = positions[id] ?: continue
+                if (was != index && index !in inSight) generations[id] = (generations[id] ?: 0) + 1
+            }
+        }
+        positions = now
+    }
+
+    /** Each episode's index among the list's items, laid out as [HistoryList] does: every day's label but the first. */
+    private fun positionsOf(ui: HistoryUiState): Map<EpisodeId, Int> {
+        val out = HashMap<EpisodeId, Int>()
+        var index = 0
+        ui.days.forEachIndexed { n, day ->
+            if (n > 0) index++
+            day.entries.forEach { out[it.episodeId] = index++ }
+        }
+        return out
+    }
+}
 
 /** Whether the list's item at [index] is a day's label (every day's but the first's), as [HistoryList] lays them out. */
 private fun isDayLabel(ui: HistoryUiState, index: Int): Boolean {
