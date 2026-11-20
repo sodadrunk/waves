@@ -9,6 +9,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -21,7 +22,8 @@ import kotlin.time.Duration.Companion.minutes
 /**
  * Caches whatever is being listened to: once an episode has been playing for [after] in total (pauses don't reset
  * the count), its whole file is cached through [DownloadManager.cache], so seeking and later plays don't depend on
- * the network (not a live stream, which has no file). Cached files nobody played for [keepFor] are evicted, at start
+ * the network (not a live stream, which has no file), and only while [allowed] (not on mobile data, when the user
+ * says so). Cached files nobody played for [keepFor] are evicted, at start
  * and then every [evictEvery], but only while [enabled] is true (offline mode turns it off, so cached audio stays
  * until the user removes it).
  */
@@ -34,6 +36,8 @@ class PlaybackCache(
     private val evictEvery: Duration = 6.hours,
     private val clock: () -> Long = ::currentTimeMillis,
     private val enabled: Flow<Boolean> = flowOf(true),
+    /** Whether an episode may be cached now (the connection allows it); listening while it may not isn't counted. */
+    private val allowed: Flow<Boolean> = flowOf(true),
 ) {
     /** Listening time per episode in this process, in ms; [after] once caching was requested. */
     private val listened = mutableMapOf<EpisodeId, Long>()
@@ -48,9 +52,12 @@ class PlaybackCache(
                 }
             }
         }
-        playback
-            .distinctUntilChanged { a, b -> a.episode?.id == b.episode?.id && a.isPlaying == b.isPlaying && a.isLive == b.isLive }
-            .collectLatest { state ->
+        combine(playback, allowed) { state, ok -> state to ok }
+            .distinctUntilChanged { (a, okA), (b, okB) ->
+                okA == okB && a.episode?.id == b.episode?.id && a.isPlaying == b.isPlaying && a.isLive == b.isLive
+            }
+            .collectLatest { (state, ok) ->
+                if (!ok) return@collectLatest
                 // A live stream has no file to cache.
                 val episode = state.episode?.takeIf { state.isPlaying && !state.isLive } ?: return@collectLatest
                 val id = episode.id

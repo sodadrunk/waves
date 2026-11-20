@@ -48,3 +48,25 @@ private fun NetworkCapabilities.reachesInternet() =
     hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
         hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
         hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+
+/**
+ * Whether the network the app goes out on is Wi-Fi or a cable (or one the system knows costs nothing), not mobile
+ * data. Followed through the default network, which is the one in use; true until told otherwise.
+ */
+fun androidUnmetered(context: Context, scope: CoroutineScope): StateFlow<Boolean> {
+    val manager = context.getSystemService(ConnectivityManager::class.java)
+    val initially = manager.activeNetwork?.let(manager::getNetworkCapabilities)?.isUnmetered() ?: true
+    return callbackFlow {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                trySend(capabilities.isUnmetered())
+            }
+        }
+        manager.registerDefaultNetworkCallback(callback)
+        awaitClose { manager.unregisterNetworkCallback(callback) }
+    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, initially)
+}
+
+private fun NetworkCapabilities.isUnmetered() =
+    hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)

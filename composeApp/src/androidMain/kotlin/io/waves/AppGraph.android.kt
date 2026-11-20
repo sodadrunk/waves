@@ -9,6 +9,7 @@ import io.waves.download.DownloadAwareAudioPlayer
 import io.waves.download.createDownloadManager
 import io.waves.data.SqlSettingsStore
 import io.waves.net.androidOnline
+import io.waves.net.androidUnmetered
 import io.waves.offline.SqlPlaybackCache
 import io.waves.player.AndroidAudioPlayer
 import io.waves.player.PlaybackCacheBridge
@@ -52,6 +53,7 @@ fun createAndroidAppGraph(context: Context): AppGraph {
         settings = settings,
         playbackCache = playbackCache,
         online = androidOnline(appContext, appScope),
+        unmetered = androidUnmetered(appContext, appScope),
         responseCacheDir = File(appContext.cacheDir, "responses").path,
     )
 }

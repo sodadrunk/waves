@@ -5,6 +5,7 @@ import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.cache.HttpCache
 import io.ktor.client.plugins.cache.storage.CacheStorage
+import io.waves.data.EpisodeCaching
 import io.waves.data.SettingsStore
 import io.waves.data.SqlArtworkColorStore
 import io.waves.data.SqlFeedFetchLog
@@ -96,6 +97,8 @@ class AppGraph(
     val playbackCache: PlaybackCache = SqlPlaybackCache(library.driver),
     /** Whether the Internet is reachable, from the platform's detector (`androidOnline` / `desktopOnline`). */
     online: StateFlow<Boolean> = MutableStateFlow(true),
+    /** Whether the connection is Wi-Fi or a cable rather than mobile data (`androidUnmetered`); always on a Mac. */
+    private val unmetered: StateFlow<Boolean> = MutableStateFlow(true),
     /** Where [ResponseCache] keeps responses; null leaves it off. */
     private val responseCacheDir: String? = null,
 ) {
@@ -159,7 +162,16 @@ class AppGraph(
         historyMedia.start()
         scheduler.start()
         // Whole-file cache after a minute of listening. Its eviction waits while offline.
-        ListeningCache(player.state, downloads, appScope, enabled = offline.map { !it }).start()
+        ListeningCache(
+            player.state, downloads, appScope, enabled = offline.map { !it },
+            allowed = combine(settings.settings, unmetered) { s, wifi ->
+                when (s.episodeCaching) {
+                    EpisodeCaching.AnyNetwork -> true
+                    EpisodeCaching.WifiOnly -> wifi
+                    EpisodeCaching.Never -> false
+                }
+            },
+        ).start()
         appScope.launch {
             val deps = AppDependencies(
                 directory = directory,

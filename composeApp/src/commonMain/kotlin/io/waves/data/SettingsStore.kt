@@ -15,6 +15,8 @@ import kotlinx.serialization.Serializable
  * @param deleteDownloadsAfterDays how many days after an episode is played its download is deleted: 0 right away,
  *   [NEVER] not at all, null as [autoDeleteDownloads] says (on: right away; off, or never chosen, which reads the
  *   same: [DEFAULT_DELETE_AFTER_DAYS]).
+ * @param episodeCaching when a whole episode is cached a minute into listening: on any network, only over Wi-Fi (or
+ *   a cable), or never.
  */
 @Serializable
 data class UserSettings(
@@ -26,6 +28,7 @@ data class UserSettings(
     val autoDownloadNewEpisodes: Boolean = false,
     val syncEnabled: Boolean = true,
     val deleteDownloadsAfterDays: Int? = null,
+    val episodeCaching: EpisodeCaching = EpisodeCaching.AnyNetwork,
 ) {
     /** [country], or the device region when it follows the device. */
     val effectiveCountry: String get() = country ?: deviceRegion()
@@ -41,6 +44,10 @@ data class UserSettings(
         const val DEFAULT_DELETE_AFTER_DAYS = 7
     }
 }
+
+/** When whole episodes are cached while listening ([UserSettings.episodeCaching]). */
+@Serializable
+enum class EpisodeCaching { AnyNetwork, WifiOnly, Never }
 
 /** Persistent [UserSettings]. [settings] always holds the current value (loaded at construction). */
 interface SettingsStore {

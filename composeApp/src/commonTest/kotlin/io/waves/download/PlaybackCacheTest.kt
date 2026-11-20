@@ -110,4 +110,21 @@ class PlaybackCacheTest {
         runCurrent()
         assertEquals(1, recorder.evictions.size)
     }
+
+    @Test fun cachesOnlyWhileTheConnectionAllowsIt() = runTest {
+        val state = MutableStateFlow(PlaybackState())
+        val wifi = MutableStateFlow(false)
+        val recorder = Recorder()
+        PlaybackCache(state, recorder, backgroundScope, clock = { currentTime }, allowed = wifi).start()
+        runCurrent()
+        val ep = episode("a")
+        state.value = PlaybackState(ep, isPlaying = true)
+        advanceTimeBy(5 * 60_000) // on mobile data: not counted
+        assertEquals(emptyList(), recorder.cached)
+        wifi.value = true
+        advanceTimeBy(59_000)
+        assertEquals(emptyList(), recorder.cached)
+        advanceTimeBy(2_000)
+        assertEquals(listOf(ep.id), recorder.cached)
+    }
 }

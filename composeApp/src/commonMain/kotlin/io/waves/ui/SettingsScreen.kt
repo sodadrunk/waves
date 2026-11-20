@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AutoDelete
+import androidx.compose.material.icons.filled.OfflineBolt
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -58,6 +59,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.waves.BuildInfo
+import io.waves.data.EpisodeCaching
 import io.waves.data.UserSettings
 import io.waves.data.deviceRegion
 import io.waves.platformName
@@ -83,7 +85,7 @@ fun SettingsScreen(state: SettingsState, deviceId: String, downloads: DownloadsS
             SyncSettings(state, ui)
             PlaybackSettings(state, ui.settings)
             DiscoverSettings(state, ui.settings)
-            if (downloads != null) DownloadSettings(downloads)
+            if (downloads != null) DownloadSettings(downloads, state, ui.settings)
             AboutSettings(deviceId, updates)
         }
     }
@@ -196,7 +198,7 @@ private fun DiscoverSettings(state: SettingsState, settings: UserSettings) {
 }
 
 @Composable
-private fun DownloadSettings(downloads: DownloadsState) {
+private fun DownloadSettings(downloads: DownloadsState, state: SettingsState, settings: UserSettings) {
     val days by downloads.deleteAfterDays.collectAsState()
     val usage by downloads.usage.collectAsState()
     SettingsGroup("Downloads") {
@@ -210,6 +212,18 @@ private fun DownloadSettings(downloads: DownloadsState) {
             selectedLabel = deleteAfterLabel(days),
             label = ::deleteAfterOption,
             onSelect = downloads::setDeleteAfterDays,
+        )
+        // Whole episodes cached a minute into listening, so they play on without the network: on mobile data too?
+        ChoiceRow(
+            // The bolt that marks a cached episode elsewhere in the app.
+            icon = Icons.Default.OfflineBolt,
+            title = "Episode caching",
+            subtitle = "Start caching full episode after a minute of playing",
+            options = EpisodeCaching.entries,
+            selected = settings.episodeCaching,
+            selectedLabel = cachingLabel(settings.episodeCaching),
+            label = ::cachingLabel,
+            onSelect = state::setEpisodeCaching,
         )
     }
 }
@@ -232,6 +246,12 @@ internal fun formatBytes(bytes: Long): String {
     }
     val shown = if (unit > 0 && value < 10) ((value * 10).toLong() / 10.0).toString() else value.toLong().toString()
     return "$shown ${units[unit]}"
+}
+
+private fun cachingLabel(caching: EpisodeCaching): String = when (caching) {
+    EpisodeCaching.AnyNetwork -> "Always"
+    EpisodeCaching.WifiOnly -> "Wi-Fi only"
+    EpisodeCaching.Never -> "Never"
 }
 
 /** When a played episode's download goes: never, right away, or so many days later. */
