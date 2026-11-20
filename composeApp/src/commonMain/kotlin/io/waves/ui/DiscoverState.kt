@@ -331,7 +331,16 @@ class DiscoverState(
                     }
                 _state.update { it.copy(live = null) }
                 val (shows, live) = coroutineScope {
-                    val stream = async { resolveLive?.invoke(term) }
+                    // Only a bonus: a failing look for a stream on air leaves the results as they are.
+                    val stream = async {
+                        try {
+                            resolveLive?.invoke(term)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
                     resolve(term) to stream.await()
                 }
                 _state.update {

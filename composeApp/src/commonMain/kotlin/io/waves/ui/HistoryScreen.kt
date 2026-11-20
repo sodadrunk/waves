@@ -116,8 +116,6 @@ fun HistoryScreen(
     downloads: DownloadsState? = null,
     /** Pulling the list down syncs through it while signed in with sync on; null leaves out pull to sync. */
     sync: SettingsState? = null,
-    /** The episode behind an entry, for its download button; none when it is no longer known. */
-    episodeOf: suspend (HistoryEntry) -> Episode? = { null },
     /** Episodes on air: no progress, no replay and nothing to mark played. */
     live: Set<EpisodeId> = emptySet(),
     /** Marks an entry's episode played, or not played again. */
@@ -198,9 +196,9 @@ fun HistoryScreen(
                         modifier = Modifier.fillMaxSize(),
                         gapTop = ListDividerHeight,
                         progress = pull,
-                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, live, onSetPlayed, state::remove, rowKeys::keyOf, list) }
+                    ) { HistoryList(ui, deviceId, onPlay, downloads, listState, today, live, onSetPlayed, state::remove, rowKeys::keyOf, list) }
                 } else {
-                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, episodeOf, live, onSetPlayed, state::remove, rowKeys::keyOf, list)
+                    HistoryList(ui, deviceId, onPlay, downloads, listState, today, live, onSetPlayed, state::remove, rowKeys::keyOf, list)
                 }
                 ListDivider(tint = { pull.value })
             }
@@ -217,7 +215,6 @@ private fun HistoryList(
     downloads: DownloadsState?,
     listState: LazyListState,
     today: LocalDate,
-    episodeOf: suspend (HistoryEntry) -> Episode?,
     live: Set<EpisodeId>,
     onSetPlayed: (HistoryEntry, Boolean) -> Unit,
     onRemove: (HistoryEntry) -> Unit,

@@ -387,7 +387,6 @@ private fun CurrentScreen(
                             )
                             Tab.History -> HistoryScreen(
                                 app.history, deps.deviceId, playFromHistory, app.downloads, app.settings,
-                                episodeOf = { deps.library.episode(it.episodeId) ?: youtubeEpisodeOf(it) },
                                 // On air: streams of followed channels, and whatever plays live now.
                                 live = app.liveNow.items.collectAsState().value.mapTo(HashSet()) { it.episode.id } +
                                     setOfNotNull(playback.episode?.id?.takeIf { playback.isLive }),
