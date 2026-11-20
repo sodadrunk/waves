@@ -98,7 +98,7 @@ class DesktopAudioPlayer(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                fail(gen, e.message ?: "Couldn't open this episode")
+                fail(gen, e.message ?: "Couldn't open this episode", connectionLost = isConnectionLoss(e))
                 return@launch
             }
             try {
@@ -183,7 +183,7 @@ class DesktopAudioPlayer(
         }
         mp.setOnError {
             if (gen != generation) return@setOnError
-            fail(gen, mp.error?.message ?: "Playback error")
+            fail(gen, mp.error?.message ?: "Playback error", connectionLost = mp.error?.let(::isConnectionLoss) == true)
         }
         mp.statusProperty().addListener { _, _, _ -> if (gen == generation) publishFromPlayer() }
     }
@@ -217,14 +217,14 @@ class DesktopAudioPlayer(
             // instead, or at the oldest it still has when that has gone.
             wantPlaying = true
             movedAt = System.nanoTime()
-            _state.update { it.copy(isPlaying = true, isBuffering = true, isEnded = false, error = null) }
+            _state.update { it.copy(isPlaying = true, isBuffering = true, isEnded = false, error = null, connectionLost = false) }
             ticker.start()
             reopenLive(liveTimeMs?.coerceAtLeast(session.window().startMs))
             return
         }
         wantPlaying = true
         movedAt = System.nanoTime()
-        _state.update { it.copy(isPlaying = true, isEnded = false, error = null) }
+        _state.update { it.copy(isPlaying = true, isEnded = false, error = null, connectionLost = false) }
         ticker.start()
         fx {
             val mp = player ?: return@fx
@@ -287,7 +287,7 @@ class DesktopAudioPlayer(
     private fun publishFromPlayer() {
         val mp = player ?: return
         if (stalled(mp)) {
-            fail(generation, "The connection was lost")
+            fail(generation, "The connection was lost", connectionLost = true)
             return
         }
         if (!ready && mp.status == MediaPlayer.Status.UNKNOWN) {
@@ -337,7 +337,9 @@ class DesktopAudioPlayer(
             movedAt = now
             return false
         }
-        return now - movedAt > STALL_MS * 1_000_000
+        // Getting ready reads the start of the file, or a live stream's first pieces, at the network's pace: it gets
+        // longer than playing on does.
+        return now - movedAt > (if (ready) STALL_MS else READY_STALL_MS) * 1_000_000
     }
 
     /** FX thread: forgets the live stream that was playing. */
@@ -347,11 +349,11 @@ class DesktopAudioPlayer(
         liveTimeMs = null
     }
 
-    private fun fail(gen: Long, message: String) {
+    private fun fail(gen: Long, message: String, connectionLost: Boolean = false) {
         if (gen != generation) return
         wantPlaying = false
         ticker.stop()
-        _state.update { it.copy(isPlaying = false, isBuffering = false, error = message) }
+        _state.update { it.copy(isPlaying = false, isBuffering = false, error = message, connectionLost = connectionLost) }
         fx { if (gen == generation) disposePlayer() }
     }
 
@@ -376,3 +378,15 @@ class DesktopAudioPlayer(
 
 /** How long the engine may stand still, asked to play, before playback counts as having lost its connection. */
 private const val STALL_MS = 20_000L
+
+/** The same, while the engine is still getting ready to play. */
+private const val READY_STALL_MS = 60_000L
+
+/** Whether [error] is the network failing to carry a request, rather than an answer saying no. */
+internal fun isConnectionLoss(error: Throwable): Boolean =
+    generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }.take(10).any {
+        it is java.net.UnknownHostException || it is java.net.SocketException || it is java.net.SocketTimeoutException ||
+            it is java.net.http.HttpTimeoutException || it is javax.net.ssl.SSLException ||
+            // JavaFX reports a stream it couldn't keep reading this way, its cause unwrapped.
+            (it is javafx.scene.media.MediaException && it.type == javafx.scene.media.MediaException.Type.MEDIA_UNAVAILABLE)
+    }

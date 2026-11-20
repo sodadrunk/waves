@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.seconds
 class PlaybackReconnectTest {
     private val episode = episode(podcastA, 1)
     private val playing = PlaybackState(episode, isPlaying = true, positionMs = 5_000, durationMs = 600_000)
-    private val failed = playing.copy(isPlaying = false, error = "Source error")
+    private val failed = playing.copy(isPlaying = false, error = "Source error", connectionLost = true)
     private val state = MutableStateFlow(playing)
     private val offline = MutableStateFlow(false)
     private var retries = 0
@@ -82,6 +82,15 @@ class PlaybackReconnectTest {
         assertEquals(true, tried in 1..8)
         advanceTimeBy(30.minutes)
         assertEquals(tried, retries)
+    }
+
+    @Test
+    fun leavesAloneAFailureThatWasNotTheConnection() = runTest {
+        reconnect()
+        runCurrent()
+        state.value = failed.copy(error = "This video is private", connectionLost = false)
+        advanceTimeBy(10.minutes)
+        assertEquals(0, retries)
     }
 
     @Test

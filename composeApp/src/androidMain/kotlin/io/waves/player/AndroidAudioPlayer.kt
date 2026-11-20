@@ -9,6 +9,7 @@ import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -165,7 +166,12 @@ class AndroidAudioPlayer(
                 if (gen == playGeneration) {
                     locating = null
                     wantPlaying = false
-                    _state.update { it.copy(isPlaying = false, isBuffering = false, error = e.message ?: "Couldn't open this episode") }
+                    _state.update {
+                        it.copy(
+                            isPlaying = false, isBuffering = false, error = e.message ?: "Couldn't open this episode",
+                            connectionLost = PatientLoadErrorPolicy.isConnectionLoss(e),
+                        )
+                    }
                 }
                 return@launch
             }
@@ -193,7 +199,7 @@ class AndroidAudioPlayer(
     override fun resume() {
         val episode = currentEpisode ?: _state.value.episode ?: return
         wantPlaying = true
-        _state.update { it.copy(isPlaying = true, isEnded = false, error = null) }
+        _state.update { it.copy(isPlaying = true, isEnded = false, error = null, connectionLost = false) }
         withController { c ->
             if (locating == playGeneration) return@withController // the episode being opened plays once it's found
             if (c.mediaItemCount == 0) {
@@ -279,6 +285,11 @@ class AndroidAudioPlayer(
             isEnded = flags.isEnded,
             error = error?.let { it.message ?: it.errorCodeName },
             isLive = live,
+            connectionLost = error != null && (
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    PatientLoadErrorPolicy.isConnectionLoss(error)
+                ),
         )
         ticker.setRunning(flags.isPlaying)
     }

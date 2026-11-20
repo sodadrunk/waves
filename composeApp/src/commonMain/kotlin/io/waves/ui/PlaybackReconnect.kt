@@ -19,8 +19,8 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Plays on by itself after the connection was lost for a while. Playback that failed ([PlaybackState.error]; the
- * players only fail what was asked to play) is tried again ([retry]) once the device isn't [offline], a little later
+ * Plays on by itself after the connection was lost for a while. Playback that failed for want of a connection
+ * ([PlaybackState.connectionLost]; the players only fail what was asked to play) is tried again ([retry]) once the device isn't [offline], a little later
  * each time it fails again, until sound comes out, it has been tried [tries] times, or [giveUpAfter] has passed since
  * it first failed: audio starting up long after that would come as a surprise. Playing something else, or playing again by hand, starts over.
  */
@@ -42,7 +42,7 @@ class PlaybackReconnect(
         var failedAt: Long? = null
         var attempts = 0
         playback
-            .map { Status(it.episode?.id, it.error != null, it.error == null && it.isPlaying && !it.isBuffering) }
+            .map { Status(it.episode?.id, it.error != null && it.connectionLost, it.error == null && it.isPlaying && !it.isBuffering) }
             .distinctUntilChanged()
             .collectLatest { status ->
                 if (status.episode != episode || status.sounding) {

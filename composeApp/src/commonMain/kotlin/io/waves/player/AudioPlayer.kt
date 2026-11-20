@@ -49,6 +49,8 @@ data class PlaybackState(
      * (`PlayerMath.isAtLiveEdge`), and seeking to the end goes there. Neither is a place in an episode to save.
      */
     val isLive: Boolean = false,
+    /** With [error]: it was the connection that failed (gone, or too slow), so playing again may well work. */
+    val connectionLost: Boolean = false,
 )
 
 /** Where an episode's audio plays from right now, and whether that is a stream still on air ([PlaybackState.isLive]). */
