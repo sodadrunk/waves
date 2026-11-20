@@ -129,6 +129,7 @@ class AppGraph(
         downloads = downloads,
         cache = playbackCache,
         activeEpisode = activeEpisode,
+        offline = offline,
         scope = appScope,
     )
     val scheduler = SyncScheduler(

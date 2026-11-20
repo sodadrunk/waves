@@ -62,11 +62,12 @@ class HistoryMediaPurgeTest {
     private val history = MutableStateFlow<List<HistoryEntry>>(emptyList())
     private val removals = MutableStateFlow<List<HistoryRemoval>>(emptyList())
     private val active = MutableStateFlow<EpisodeId?>(null)
+    private val offline = MutableStateFlow(false)
     private val downloads = Downloads()
     private val cache = Cache()
 
     private fun TestScope.purge() = HistoryMediaPurge(
-        history, removals, downloads, cache, active, backgroundScope, clock = { testScheduler.currentTime },
+        history, removals, downloads, cache, active, offline, backgroundScope, clock = { testScheduler.currentTime },
         firstScanAfter = 2.minutes, scanEvery = 6.hours, scanGrace = 1.hours,
     ).start()
 
@@ -98,6 +99,34 @@ class HistoryMediaPurgeTest {
     }
 
     @Test
+    fun aDownloadAskedForAfterTheRemovalStays() = runTest {
+        removals.value = listOf(HistoryRemoval(id("a"), 10))
+        purge()
+        // Downloaded again: queued, under way, then done, all after the removal.
+        downloads.rows.value = listOf(DownloadInfo(id("a"), DownloadStatus.Queued, 0, null, "/d/a.mp3", null, createdAtEpochMs = 20))
+        runCurrent()
+        downloads.rows.value = listOf(done("a", 30).copy(createdAtEpochMs = 20))
+        runCurrent()
+        assertEquals(emptyList(), downloads.deleted)
+    }
+
+    @Test
+    fun nothingGoesWhileOffline() = runTest {
+        offline.value = true
+        downloads.rows.value = listOf(done("a", 0))
+        downloads.cached.value = setOf(id("b"))
+        removals.value = listOf(HistoryRemoval(id("a"), 10))
+        purge()
+        advanceTimeBy(7.hours)
+        assertEquals(emptyList(), downloads.deleted)
+        assertEquals(0, downloads.prunes)
+        // Back online, the removal is carried out.
+        offline.value = false
+        runCurrent()
+        assertEquals(listOf(id("a")), downloads.deleted)
+    }
+
+    @Test
     fun theScanSweepsWhatTheHistoryDoesNotAccountFor() = runTest {
         advanceTimeBy(5.hours)
         val now = testScheduler.currentTime
@@ -113,7 +142,8 @@ class HistoryMediaPurgeTest {
         advanceTimeBy(1.minutes)
         assertEquals(emptyList(), downloads.deleted)
         advanceTimeBy(2.minutes)
-        assertEquals(setOf(id("orphan"), id("cachedOrphan"), id("partial")), downloads.deleted.toSet())
+        // Not the downloads: the history entry of one is written as it completes, and only a removal takes it.
+        assertEquals(setOf(id("cachedOrphan"), id("partial")), downloads.deleted.toSet())
         assertEquals(listOf(id("partial")), cache.removed.filter { it == id("partial") })
         assertEquals(1, downloads.prunes)
     }

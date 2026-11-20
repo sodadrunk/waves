@@ -73,7 +73,8 @@ class HistoryState(
     /** Takes [entry]'s episode out of the history, here and (synced) on the other devices; its progress stays. */
     fun remove(entry: HistoryEntry) {
         scope.launch {
-            library.removeFromHistory(entry.episodeId, clock())
+            // No earlier than its newest session (the one listed), which may come from a device whose clock is ahead.
+            library.removeFromHistory(entry.episodeId, maxOf(clock(), entry.playedAtEpochMs))
             onLocalChange()
         }
     }

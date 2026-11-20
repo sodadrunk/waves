@@ -539,6 +539,19 @@ class HistoryStateTest {
         HistoryEntry(EpisodeId("f", "g$at"), "E$at", "P", at, device)
 
     @Test
+    fun aRemovalIsNoEarlierThanTheSessionItRemoves() = runTest {
+        val library = io.waves.sync.FakeLibrary()
+        // Played on a device whose clock is ahead of this one's (1_000).
+        val ahead = entry(5_000)
+        library.addHistory(ahead)
+        val s = HistoryState(library, backgroundScope, TimeZone.UTC, clock = { 1_000L })
+        s.remove(ahead)
+        runCurrent()
+        assertEquals(emptyList(), library.history.first())
+        assertEquals(5_000L, library.stateFlow.value.historyRemoved.single().removedAtEpochMs)
+    }
+
+    @Test
     fun percentPlayedIsFullOnlyOnceCompleted() {
         val id = EpisodeId("f", "g")
         assertEquals(42, HistoryState.percentPlayed(PlaybackProgress(id, 252_000, 600_000, false, 1)))

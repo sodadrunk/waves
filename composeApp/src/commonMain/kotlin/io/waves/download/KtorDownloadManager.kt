@@ -111,6 +111,8 @@ class KtorDownloadManager(
     private val fs = SystemFileSystem
     private val permits = Semaphore(maxConcurrent)
     private val activeLock = Mutex()
+    /** Held while a file is put into the folder ahead of its row ([enqueue] adopting a cached copy), and by [pruneStrayFiles]. */
+    private val placing = Mutex()
     private val active = mutableMapOf<EpisodeId, Job>()
 
     /** Completed downloads (id -> path) for the synchronous [localUri]; kept in step with this manager's writes. */
@@ -138,13 +140,19 @@ class KtorDownloadManager(
             .map { it?.toInfo() }
 
     override suspend fun enqueue(episode: Episode) {
+        val schedule = placing.withLock { place(episode) }
+        if (schedule) dispatch(episode.id)
+    }
+
+    /** Records [episode]'s download, adopting a cached copy as its file; true when a transfer is to run. */
+    private suspend fun place(episode: Episode): Boolean {
         val id = episode.id
         val current = withContext(ioContext) { queries.byId(id.feedUrl, id.guid).executeAsOneOrNull() }
         val path = current?.filePath ?: "${directory.trimEnd('/')}/${downloadFileName(episode)}"
         // A fresh download takes over the playback cache's copy: complete files become the download outright,
         // partial ones are resumed from where caching stopped.
         val adopted = if (current.needsTransfer()) adoptCached(episode, path) ?: adoptPlayerCache(episode, path) else null
-        val schedule = withContext(ioContext) {
+        return withContext(ioContext) {
             queries.transactionWithResult {
                 val row = queries.byId(id.feedUrl, id.guid).executeAsOneOrNull()
                 val status = row?.let { DownloadStatus.valueOf(it.status) }
@@ -177,7 +185,6 @@ class KtorDownloadManager(
                 }
             }
         }
-        if (schedule) dispatch(id)
     }
 
     override suspend fun cancel(episodeId: EpisodeId) {
@@ -218,16 +225,16 @@ class KtorDownloadManager(
     override suspend fun pruneStrayFiles(): Int {
         // A transfer under way may be about to create its file.
         if (activeLock.withLock { active.isNotEmpty() || caching.isNotEmpty() }) return 0
-        return withContext(ioContext) {
+        return placing.withLock { withContext(ioContext) {
             val dir = Path(directory)
             if (!fs.exists(dir)) return@withContext 0
-            // Files first, then rows: a download's row is written before its file, so no file seen here is newer than
-            // the rows read after.
+            // Files first, then rows: a transfer's row is written before its file, and a copy adopted ahead of its row
+            // is put there under [placing], so no file seen here is newer than the rows read after.
             val files = fs.list(dir).filter { !it.name.startsWith(".") && fs.metadataOrNull(it)?.isRegularFile == true }
             val kept = queries.all().executeAsList().flatMapTo(HashSet()) { listOf(it.filePath, it.filePath + PART_SUFFIX) }
                 .mapTo(HashSet()) { Path(it).name }
             files.count { file -> (file.name !in kept).also { stray -> if (stray) fs.delete(file, mustExist = false) } }
-        }
+        } }
     }
 
     /** No download row yet, or a completed one whose file has gone missing. */

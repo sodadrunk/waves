@@ -191,7 +191,9 @@ class DownloadsState(
                             .forEach { recorded += it.episodeId to it.playedAtEpochMs }
                         loaded = true
                     }
-                    val fresh = done.filter { (d, at) -> (d.episodeId to at) !in recorded }
+                    // Not one taken out of the history since: that removal stands.
+                    val removedAt = library.historyRemovals.first().associate { it.episodeId to it.removedAtEpochMs }
+                    val fresh = done.filter { (d, at) -> (d.episodeId to at) !in recorded && (removedAt[d.episodeId] ?: Long.MIN_VALUE) < at }
                     for ((d, at) in fresh) {
                         library.addHistory(
                             HistoryEntry(
