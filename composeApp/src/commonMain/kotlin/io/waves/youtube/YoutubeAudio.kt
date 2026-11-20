@@ -215,12 +215,36 @@ object YoutubeAudio {
             if (!mime.startsWith("audio/mp4")) return@mapNotNull null
             val url = format.string("url")?.takeIf { it.startsWith("https://") && YoutubeUrls.videoId(it) == null }
                 ?: return@mapNotNull null
-            url to (format.long("bitrate") ?: 0L)
+            AudioFormat(url, format.long("bitrate") ?: 0L, trackOf(format, url))
         }
-        if (audio.isNotEmpty()) return AudioChoice.Stream(audio.maxBy { it.second }.first)
+        if (audio.isNotEmpty()) return AudioChoice.Stream(original(audio).maxBy { it.bitrate }.url)
         if (status != null && status != "OK") return AudioChoice.Unavailable(status, reason)
         return AudioChoice.Unavailable(status, "This video has no audio stream that can be played here.")
     }
+
+    private class AudioFormat(val url: String, val bitrate: Long, val track: Track)
+
+    /** Which of a video's audio tracks a format is of, where it has several (a dub YouTube made, beside the original). */
+    private enum class Track { Original, Default, Other, Only }
+
+    private fun trackOf(format: JsonObject, url: String): Track {
+        val track = format.obj("audioTrack") ?: return Track.Only
+        // YouTube names the original "… original" and tags its address `acont=original` (a dub: `dubbed-auto`).
+        val name = track.string("displayName").orEmpty()
+        return when {
+            "original" in name.lowercase() || "acont%3Doriginal" in url || "acont=original" in url -> Track.Original
+            track.boolean("audioIsDefault") == true -> Track.Default
+            else -> Track.Other
+        }
+    }
+
+    /**
+     * The formats of the video's original audio, not a dub: those marked original, else those YouTube plays by
+     * default, else all (a video with one audio track has nothing to choose).
+     */
+    private fun original(formats: List<AudioFormat>): List<AudioFormat> =
+        formats.filter { it.track == Track.Original }.ifEmpty { formats.filter { it.track == Track.Default } }
+            .ifEmpty { formats }
 
     internal fun audioFailureMessage(failure: AudioChoice.Unavailable?): String = when (failure?.status) {
         "LOGIN_REQUIRED" -> "YouTube asked for a sign-in check, so this video can't be played as audio right now. " +

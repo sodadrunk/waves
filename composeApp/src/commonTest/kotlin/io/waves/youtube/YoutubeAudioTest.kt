@@ -214,4 +214,27 @@ class YoutubeAudioTest {
     private companion object {
         const val VIDEO = "sampleVid01"
     }
+
+    @Test
+    fun playsTheOriginalAudioNotADub() {
+        val json = """
+            {
+              "playabilityStatus": {"status": "OK"},
+              "streamingData": {
+                "adaptiveFormats": [
+                  {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 130000,
+                   "url": "https://rr.googlevideo.com/videoplayback?id=fr&xtags=acont%3Ddubbed-auto",
+                   "audioTrack": {"displayName": "French (France)", "id": "fr.3", "audioIsDefault": true}},
+                  {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 120000,
+                   "url": "https://rr.googlevideo.com/videoplayback?id=en&xtags=acont%3Doriginal",
+                   "audioTrack": {"displayName": "English (United States) original", "id": "en-US.4", "audioIsDefault": false}}
+                ]
+              }
+            }
+        """.trimIndent()
+        assertEquals(
+            "https://rr.googlevideo.com/videoplayback?id=en&xtags=acont%3Doriginal",
+            assertIs<AudioChoice.Stream>(YoutubeAudio.interpret(json)).url,
+        )
+    }
 }

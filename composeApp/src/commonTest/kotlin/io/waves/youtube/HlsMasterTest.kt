@@ -76,4 +76,16 @@ class HlsMasterTest {
         assertEquals("https://manifest.googlevideo.com/api/manifest/hls_variant/id/x/file/audio/index.m3u8", HlsMaster.audioOnly(master, "$url?x=1"))
         assertEquals("https://manifest.googlevideo.com/video/index.m3u8", HlsMaster.lowestVariant(master, url))
     }
+
+    @Test
+    fun picksTheOriginalAudioOfAStreamWithADub() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Español",LANGUAGE="es",DEFAULT=YES,URI="https://m.example/es.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="English original",LANGUAGE="en",DEFAULT=NO,URI="https://m.example/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="mp4a.40.2",AUDIO="a"
+            https://m.example/v.m3u8
+        """.trimIndent()
+        assertEquals("https://m.example/en.m3u8", HlsMaster.audioOnly(master, "https://m.example/master.m3u8"))
+    }
 }

@@ -8,14 +8,23 @@ import kotlinx.datetime.Instant
  */
 internal object HlsMaster {
     /**
-     * The playlist of the best rendition that is audio alone, or null when the stream offers none. AAC-LC (what
-     * YouTube's higher one is) is preferred over HE-AAC, the low-bitrate one.
+     * The playlist of the best rendition that is audio alone, or null when the stream offers none: the original audio
+     * over a dub, and AAC-LC (what YouTube's higher one is) over HE-AAC, the low-bitrate one.
      */
     fun audioOnly(master: String, masterUrl: String): String? {
         val variants = variants(master)
         return tags(master, "#EXT-X-MEDIA:")
             .filter { it["TYPE"] == "AUDIO" && !it["URI"].isNullOrEmpty() }
-            .maxByOrNull { audio -> if (variants.any { it.audioGroup == audio["GROUP-ID"] && "mp4a.40.2" in it.codecs }) 1 else 0 }
+            // The original audio before a dub, then AAC-LC.
+            .maxWithOrNull(
+                compareBy<Map<String, String>> { audio ->
+                    when {
+                        "original" in audio["NAME"].orEmpty().lowercase() -> 2
+                        audio["DEFAULT"] == "YES" -> 1
+                        else -> 0
+                    }
+                }.thenBy { audio -> if (variants.any { it.audioGroup == audio["GROUP-ID"] && "mp4a.40.2" in it.codecs }) 1 else 0 },
+            )
             ?.let { resolve(it.getValue("URI"), masterUrl) }
     }
 
