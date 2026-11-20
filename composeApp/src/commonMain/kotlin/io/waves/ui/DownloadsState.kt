@@ -64,14 +64,18 @@ data class DownloadsUiState(
     val autoDeleteAfterFinishing: Boolean = false,
 )
 
+/** How many downloads there are here, and how many bytes they take. */
+data class DownloadUsage(val count: Int, val bytes: Long)
+
 /**
  * App-wide download actions and state.
  *
- * Auto-delete: while enabled, the download of an episode is removed once it becomes completed (played to the
- * end / marked played), but not while it is still the episode loaded in the player (until it has ended or the
- * player moves on). Episodes already completed when the holder starts are left alone. While offline, those
- * deletions wait and run once the connection is back. Removing a download by hand always deletes it, and
- * also drops a playback-cache entry for that episode.
+ * Delete after playing ([deleteAfterDays]): a download is removed once its episode was played (to the end, or marked
+ * played) after the download was made: right away, as that is seen, or so many days after it was played, checked
+ * every [laterDeleteEvery]. Never while it is the episode loaded in the player (until it has ended or the player
+ * moves on), nor while offline, where those deletions wait for the connection. A download made of an episode played
+ * before is the user's to keep. Removing a download by hand always deletes it, and also drops a playback-cache entry
+ * for that episode.
  *
  * A cached episode (kept by the player, not downloaded) is removed [cacheKeptAfterPlayed] after it was played, checked
  * every [cacheSweepEvery], unless it's the episode in the player; not while offline, where cached audio is all there is.
@@ -82,9 +86,6 @@ data class DownloadsUiState(
  * With a [deviceId], each finished download is added to History at the time it finished, including downloads
  * that finished in the background while the app was closed. A never-played episode also gets progress at 0:00.
  */
-/** How many downloads there are here, and how many bytes they take. */
-data class DownloadUsage(val count: Int, val bytes: Long)
-
 class DownloadsState(
     private val downloads: DownloadManager,
     private val library: LibraryRepository,
@@ -163,13 +164,17 @@ class DownloadsState(
                 }
             }
         }
-        // Some days after playing: those played that long ago, checked now and then.
+        // Those already played: once on switching to right away, and some days after playing, checked now and then;
+        // offline, as soon as the connection is back.
         scope.launch {
-            deleteAfterDays.collectLatest { days ->
-                if (days <= 0) return@collectLatest
-                while (true) {
-                    if (!offline.value) guarded { deletePlayedBefore(clock() - days.days.inWholeMilliseconds) }
-                    delay(laterDeleteEvery)
+            combine(deleteAfterDays, offline) { days, off -> days.takeUnless { off } }.collectLatest { days ->
+                when {
+                    days == null || days < 0 -> Unit
+                    days == 0 -> guarded { deletePlayedBefore(Long.MAX_VALUE) }
+                    else -> while (true) {
+                        guarded { deletePlayedBefore(clock() - days.days.inWholeMilliseconds) }
+                        delay(laterDeleteEvery)
+                    }
                 }
             }
         }
@@ -191,13 +196,20 @@ class DownloadsState(
         }
     }
 
-    /** Deletes the downloads of episodes played before [cutoff] (when marked played), but the one loaded. */
+    /**
+     * Deletes the downloads of episodes played (marked played) before [cutoff], but only where that was after the
+     * download was made: one made again of an episode played before is wanted. Not the one loaded.
+     */
     private suspend fun deletePlayedBefore(cutoff: Long) {
-        val done = downloads.downloads.first().filter { it.status == DownloadStatus.Done }.mapTo(HashSet()) { it.episodeId }
-        if (done.isEmpty()) return
+        val made = downloads.downloads.first().filter { it.status == DownloadStatus.Done }
+            .associate { it.episodeId to it.createdAtEpochMs }
+        if (made.isEmpty()) return
         val active = activeEpisode()
         val due = library.allProgress.first()
-            .filter { it.completed && it.updatedAtEpochMs < cutoff && it.episodeId in done && it.episodeId != active }
+            .filter { p ->
+                val since = made[p.episodeId] ?: return@filter false
+                p.completed && p.updatedAtEpochMs < cutoff && p.updatedAtEpochMs >= since && p.episodeId != active
+            }
             .map { it.episodeId }
         if (due.isNotEmpty()) downloads.deleteDownloads(due)
     }

@@ -177,13 +177,16 @@ class DownloadsStateTest {
         s.state.download(ep1)
         s.state.download(ep2)
         settle()
-        // Already completed before enabling: kept.
+        s.state.setDeleteAfterDays(UserSettings.NEVER)
+        settle()
+        // Played (since it was downloaded) before turning it on: it goes as it is turned on.
         library.saveProgress(PlaybackProgress(ep2.id, 600_000, 600_000, true, 5))
         settle()
+        assertEquals(2, s.state.state.value.items.size)
         s.state.setAutoDeleteAfterFinishing(true)
         settle()
         assertTrue(s.state.state.value.autoDeleteAfterFinishing)
-        assertEquals(2, s.state.state.value.items.size)
+        assertEquals(listOf(ep1.id), s.state.state.value.items.map { it.episodeId })
 
         // ep1 finishes while it is still loaded (not ended) in the player, reported with its file:// URL.
         playback.value = PlaybackState(ep1.copy(audioUrl = s.manager.localUri(ep1.id)!!), isPlaying = true)
@@ -193,7 +196,7 @@ class DownloadsStateTest {
         playback.value = playback.value.copy(isPlaying = false, isEnded = true)
         settle()
         assertNull(s.manager.localUri(ep1.id))
-        assertEquals(listOf(ep2.id), s.state.state.value.items.map { it.episodeId })
+        assertEquals(emptyList(), s.state.state.value.items.map { it.episodeId })
     }
 
     @Test
@@ -213,6 +216,46 @@ class DownloadsStateTest {
         settle()
         assertFalse(again.state.state.value.autoDeleteAfterFinishing)
         assertFalse(store.settings.value.autoDeleteDownloads) // kept in step, for a version that only reads it
+    }
+
+    @Test
+    fun aDownloadMadeOfAnEpisodePlayedBeforeStays() = runTest {
+        val day = 24 * 3600 * 1000L
+        advanceTimeBy(20 * day)
+        library.saveProgress(PlaybackProgress(ep1.id, 600_000, 600_000, true, testScheduler.currentTime - 10 * day))
+        // Downloaded today, for a flight.
+        val m = InMemoryDownloadManager(backgroundScope, stepMs = 100, steps = 10, clock = { testScheduler.currentTime })
+        val state = DownloadsState(m, library, playback, backgroundScope, InMemorySettingsStore(UserSettings().withDeleteAfterDays(7)), clock = { testScheduler.currentTime })
+        state.download(ep1)
+        settle()
+        advanceTimeBy(3 * 3600 * 1000L)
+        assertNotNull(m.localUri(ep1.id))
+    }
+
+    @Test
+    fun switchingToRightAwayClearsWhatWasPlayedAndWaitsForTheConnection() = runTest {
+        val offline = MutableStateFlow(false)
+        val m = InMemoryDownloadManager(backgroundScope, stepMs = 100, steps = 10, clock = { testScheduler.currentTime })
+        val store = InMemorySettingsStore(UserSettings().withDeleteAfterDays(7))
+        val state = DownloadsState(m, library, playback, backgroundScope, store, offline = offline, clock = { testScheduler.currentTime })
+        state.download(ep1)
+        settle()
+        library.saveProgress(PlaybackProgress(ep1.id, 600_000, 600_000, true, testScheduler.currentTime))
+        settle()
+        assertNotNull(m.localUri(ep1.id)) // played today: 7 days to go
+        offline.value = true
+        state.setDeleteAfterDays(0)
+        settle()
+        assertNotNull(m.localUri(ep1.id), "not while offline")
+        offline.value = false
+        settle()
+        assertNull(m.localUri(ep1.id), "at once, back online")
+    }
+
+    @Test
+    fun onlyRightAwayTurnsTheEarlierToggleOn() {
+        assertTrue(UserSettings().withDeleteAfterDays(0).autoDeleteDownloads)
+        assertFalse(UserSettings().withDeleteAfterDays(15).autoDeleteDownloads)
     }
 
     @Test

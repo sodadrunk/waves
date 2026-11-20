@@ -126,7 +126,6 @@ class WavesAppUiTest {
         waitForText("3 days after playing")
         onNodeWithText("3 days after playing").performSemanticsAction(SemanticsActions.OnClick)
         waitFor("deleting after 3 days") { deps.settings.settings.value.deleteAfterDays == 3 }
-        assertTrue(deps.settings.settings.value.autoDeleteDownloads)
         // Turning sync off says so. (History's header says it too, briefly; the test clock runs past that at once.)
         onNodeWithText("Sync with Google Drive").performScrollTo()
             .performSemanticsAction(SemanticsActions.OnClick)
