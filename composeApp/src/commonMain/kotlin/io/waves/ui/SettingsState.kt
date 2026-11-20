@@ -73,7 +73,7 @@ class SettingsState(
 
     fun setSkipForwardSeconds(seconds: Int) = edit { it.copy(skipForwardSeconds = seconds.coerceIn(1, 600)) }
 
-    fun setAutoDeleteDownloads(enabled: Boolean) = edit { it.copy(autoDeleteDownloads = enabled) }
+    fun setAutoDeleteDownloads(enabled: Boolean) = edit { it.withDeleteAfterDays(if (enabled) 0 else UserSettings.NEVER) }
 
     fun setSyncEnabled(enabled: Boolean) = edit { it.copy(syncEnabled = enabled) }
 

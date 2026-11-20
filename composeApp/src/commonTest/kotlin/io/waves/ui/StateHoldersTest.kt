@@ -687,7 +687,7 @@ class SettingsStateTest {
         settle()
         val expected = UserSettings(
             country = "gb", defaultSpeed = 1.5f, skipBackSeconds = 10, skipForwardSeconds = 45,
-            autoDeleteDownloads = true, syncEnabled = false,
+            autoDeleteDownloads = true, syncEnabled = false, deleteDownloadsAfterDays = 0,
         )
         assertEquals(expected, store.settings.value)
         assertEquals(expected, s.state.value.settings)

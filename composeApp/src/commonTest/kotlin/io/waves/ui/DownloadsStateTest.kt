@@ -198,7 +198,7 @@ class DownloadsStateTest {
 
     @Test
     fun autoDeleteIsPersistedInTheSettingsStore() = runTest {
-        val store = InMemorySettingsStore()
+        val store = InMemorySettingsStore(UserSettings().withDeleteAfterDays(UserSettings.NEVER))
         val s = setup(settings = store)
         assertFalse(s.state.autoDeleteAfterFinishing.value)
         s.state.setAutoDeleteAfterFinishing(true)
@@ -209,9 +209,38 @@ class DownloadsStateTest {
         val again = setup(settings = store)
         assertTrue(again.state.autoDeleteAfterFinishing.value)
         assertTrue(again.state.state.value.autoDeleteAfterFinishing)
-        store.update { it.copy(autoDeleteDownloads = false) }
+        store.update { it.withDeleteAfterDays(UserSettings.NEVER) }
         settle()
         assertFalse(again.state.state.value.autoDeleteAfterFinishing)
+        assertFalse(store.settings.value.autoDeleteDownloads) // kept in step, for a version that only reads it
+    }
+
+    @Test
+    fun theEarlierToggleReadsAsRightAway() {
+        assertEquals(0, UserSettings(autoDeleteDownloads = true).deleteAfterDays)
+        // Off, or never chosen (a stored off isn't written out, so the two read alike): the default.
+        assertEquals(UserSettings.DEFAULT_DELETE_AFTER_DAYS, UserSettings().deleteAfterDays)
+        assertEquals(UserSettings.NEVER, UserSettings().withDeleteAfterDays(UserSettings.NEVER).deleteAfterDays)
+        assertEquals(3, UserSettings(autoDeleteDownloads = true, deleteDownloadsAfterDays = 3).deleteAfterDays)
+    }
+
+    @Test
+    fun deletesDownloadsSomeDaysAfterPlaying() = runTest {
+        val day = 24 * 3600 * 1000L
+        val m = InMemoryDownloadManager(backgroundScope, stepMs = 100, steps = 10, clock = { 5L })
+        val store = InMemorySettingsStore(UserSettings().withDeleteAfterDays(3))
+        val state = DownloadsState(m, library, playback, backgroundScope, store, clock = { testScheduler.currentTime })
+        state.download(ep1)
+        state.download(ep2)
+        settle()
+        library.saveProgress(PlaybackProgress(ep1.id, 600_000, 600_000, true, testScheduler.currentTime))
+        library.saveProgress(PlaybackProgress(ep2.id, 300_000, 600_000, false, testScheduler.currentTime))
+        settle()
+        advanceTimeBy(2 * day)
+        assertNotNull(m.localUri(ep1.id), "played two days ago: kept")
+        advanceTimeBy(day + 2 * 3600 * 1000L)
+        assertNull(m.localUri(ep1.id), "three days on: gone")
+        assertNotNull(m.localUri(ep2.id), "not played: kept")
     }
 
     @Test
@@ -326,5 +355,15 @@ class DownloadsStateTest {
         library.saveProgress(PlaybackProgress(ep1.id, 600_000, 600_000, true, 5))
         settle()
         assertNotNull(s.manager.localUri(ep1.id))
+    }
+}
+
+class DownloadUsageLabelTest {
+    @Test
+    fun saysHowManyAndHowMuch() {
+        assertEquals("No downloads", usageLabel(DownloadUsage(0, 0)))
+        assertEquals("1 download · 52 MB", usageLabel(DownloadUsage(1, 52_400_000)))
+        assertEquals("12 downloads · 1.4 GB", usageLabel(DownloadUsage(12, 1_460_000_000)))
+        assertEquals("999 B", formatBytes(999))
     }
 }

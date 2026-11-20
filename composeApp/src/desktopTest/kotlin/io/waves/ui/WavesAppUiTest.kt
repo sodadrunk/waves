@@ -121,10 +121,11 @@ class WavesAppUiTest {
         waitForText("listener@example.com")
         waitForText("Last synced")
         // Mouse clicks land on the floating bar once this row sits at the bottom of the scroll viewport.
-        onNodeWithText("Delete downloads after playing").performScrollTo()
+        onNodeWithText("Delete after playing").performScrollTo()
             .performSemanticsAction(SemanticsActions.OnClick)
-        val autoDelete = isToggleable() and hasText("Delete downloads", substring = true)
-        waitFor("auto-delete on") { onAllNodes(autoDelete and isOn()).fetchSemanticsNodes().isNotEmpty() }
+        waitForText("3 days after playing")
+        onNodeWithText("3 days after playing").performSemanticsAction(SemanticsActions.OnClick)
+        waitFor("deleting after 3 days") { deps.settings.settings.value.deleteAfterDays == 3 }
         assertTrue(deps.settings.settings.value.autoDeleteDownloads)
         // Turning sync off says so. (History's header says it too, briefly; the test clock runs past that at once.)
         onNodeWithText("Sync with Google Drive").performScrollTo()

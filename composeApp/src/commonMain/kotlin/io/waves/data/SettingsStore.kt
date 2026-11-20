@@ -10,6 +10,11 @@ import kotlinx.serialization.Serializable
  *   device region (see [effectiveCountry]).
  * @param autoDownloadNewEpisodes placeholder: persisted only, nothing acts on it yet.
  * @param syncEnabled when false, no automatic or manual Google Drive sync runs.
+ * @param autoDeleteDownloads the earlier on/off form of [deleteDownloadsAfterDays] (on: right after playing), read
+ *   when that isn't set and kept in step with it, for a version that only knows this one.
+ * @param deleteDownloadsAfterDays how many days after an episode is played its download is deleted: 0 right away,
+ *   [NEVER] not at all, null as [autoDeleteDownloads] says (on: right away; off, or never chosen, which reads the
+ *   same: [DEFAULT_DELETE_AFTER_DAYS]).
  */
 @Serializable
 data class UserSettings(
@@ -20,9 +25,21 @@ data class UserSettings(
     val autoDeleteDownloads: Boolean = false,
     val autoDownloadNewEpisodes: Boolean = false,
     val syncEnabled: Boolean = true,
+    val deleteDownloadsAfterDays: Int? = null,
 ) {
     /** [country], or the device region when it follows the device. */
     val effectiveCountry: String get() = country ?: deviceRegion()
+
+    /** Days after playing a download is deleted ([deleteDownloadsAfterDays]); [NEVER] for never. */
+    val deleteAfterDays: Int get() = deleteDownloadsAfterDays ?: if (autoDeleteDownloads) 0 else DEFAULT_DELETE_AFTER_DAYS
+
+    /** These settings deleting downloads [days] after playing ([NEVER] for never). */
+    fun withDeleteAfterDays(days: Int): UserSettings = copy(deleteDownloadsAfterDays = days, autoDeleteDownloads = days >= 0)
+
+    companion object {
+        const val NEVER = -1
+        const val DEFAULT_DELETE_AFTER_DAYS = 7
+    }
 }
 
 /** Persistent [UserSettings]. [settings] always holds the current value (loaded at construction). */

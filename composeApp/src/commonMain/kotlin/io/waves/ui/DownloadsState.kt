@@ -27,6 +27,9 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import io.waves.data.UserSettings
+import kotlin.time.Duration.Companion.days
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -79,6 +82,9 @@ data class DownloadsUiState(
  * With a [deviceId], each finished download is added to History at the time it finished, including downloads
  * that finished in the background while the app was closed. A never-played episode also gets progress at 0:00.
  */
+/** How many downloads there are here, and how many bytes they take. */
+data class DownloadUsage(val count: Int, val bytes: Long)
+
 class DownloadsState(
     private val downloads: DownloadManager,
     private val library: LibraryRepository,
@@ -93,10 +99,17 @@ class DownloadsState(
     private val onLocalCopyRemoved: (EpisodeId) -> Unit = {},
     private val cacheKeptAfterPlayed: Duration = 24.hours,
     private val cacheSweepEvery: Duration = 30.minutes,
+    /** How often downloads played some days ago are looked for. */
+    private val laterDeleteEvery: Duration = 1.hours,
     private val clock: () -> Long = ::currentTimeMillis,
 ) {
-    val autoDeleteAfterFinishing: StateFlow<Boolean> = settings.settings.map { it.autoDeleteDownloads }
-        .stateIn(scope, SharingStarted.Eagerly, settings.settings.value.autoDeleteDownloads)
+    /** How many days after playing a download is deleted; [UserSettings.NEVER] for never. */
+    val deleteAfterDays: StateFlow<Int> = settings.settings.map { it.deleteAfterDays }
+        .stateIn(scope, SharingStarted.Eagerly, settings.settings.value.deleteAfterDays)
+
+    /** Whether downloads are deleted at all once played. */
+    val autoDeleteAfterFinishing: StateFlow<Boolean> = deleteAfterDays.map { it >= 0 }
+        .stateIn(scope, SharingStarted.Eagerly, deleteAfterDays.value >= 0)
 
     private val fullyCachedIds: StateFlow<Set<EpisodeId>> =
         combine(
@@ -109,6 +122,11 @@ class DownloadsState(
     val state: StateFlow<DownloadsUiState> =
         combine(downloads.downloads, autoDeleteAfterFinishing) { items, auto -> DownloadsUiState(items, auto) }
             .stateIn(scope, SharingStarted.Eagerly, DownloadsUiState(autoDeleteAfterFinishing = autoDeleteAfterFinishing.value))
+
+    /** Completed downloads here, and the space their files take (bytes). */
+    val usage: StateFlow<DownloadUsage> = downloads.downloads
+        .map { list -> list.filter { it.status == DownloadStatus.Done }.let { done -> DownloadUsage(done.size, done.sumOf { it.bytesDownloaded }) } }
+        .stateIn(scope, SharingStarted.Eagerly, DownloadUsage(0, 0))
 
     /** Removed while playing offline: deleted once the episode stops. */
     private val deferredRemovals = MutableStateFlow<Set<EpisodeId>>(emptySet())
@@ -128,7 +146,8 @@ class DownloadsState(
         scope.launch {
             var baseline: Set<EpisodeId>? = null
             val pending = mutableSetOf<EpisodeId>()
-            combine(completed, activeEpisode, autoDeleteAfterFinishing, offline) { done, active, auto, off ->
+            // Right after playing: as an episode is seen to be played.
+            combine(completed, activeEpisode, deleteAfterDays.map { it == 0 }, offline) { done, active, auto, off ->
                 AutoDeleteTick(done, active, auto, off)
             }.collect { (done, active, auto, off) ->
                 val previous = baseline
@@ -141,6 +160,16 @@ class DownloadsState(
                 if (ready.isNotEmpty()) {
                     pending -= ready.toSet()
                     guarded { downloads.deleteDownloads(ready) }
+                }
+            }
+        }
+        // Some days after playing: those played that long ago, checked now and then.
+        scope.launch {
+            deleteAfterDays.collectLatest { days ->
+                if (days <= 0) return@collectLatest
+                while (true) {
+                    if (!offline.value) guarded { deletePlayedBefore(clock() - days.days.inWholeMilliseconds) }
+                    delay(laterDeleteEvery)
                 }
             }
         }
@@ -160,6 +189,17 @@ class DownloadsState(
                 delay(cacheSweepEvery)
             }
         }
+    }
+
+    /** Deletes the downloads of episodes played before [cutoff] (when marked played), but the one loaded. */
+    private suspend fun deletePlayedBefore(cutoff: Long) {
+        val done = downloads.downloads.first().filter { it.status == DownloadStatus.Done }.mapTo(HashSet()) { it.episodeId }
+        if (done.isEmpty()) return
+        val active = activeEpisode()
+        val due = library.allProgress.first()
+            .filter { it.completed && it.updatedAtEpochMs < cutoff && it.episodeId in done && it.episodeId != active }
+            .map { it.episodeId }
+        if (due.isNotEmpty()) downloads.deleteDownloads(due)
     }
 
     /** Removes cached episodes played at least [cacheKeptAfterPlayed] ago. */
@@ -250,8 +290,11 @@ class DownloadsState(
         }
     }
 
-    fun setAutoDeleteAfterFinishing(enabled: Boolean) = launch {
-        settings.update { it.copy(autoDeleteDownloads = enabled) }
+    fun setAutoDeleteAfterFinishing(enabled: Boolean) = setDeleteAfterDays(if (enabled) 0 else UserSettings.NEVER)
+
+    /** Deletes downloads [days] after playing: 0 right away, [UserSettings.NEVER] not at all. */
+    fun setDeleteAfterDays(days: Int) = launch {
+        settings.update { it.withDeleteAfterDays(days) }
     }
 
     /** Episodes from the player may carry a file:// audioUrl; prefer the stored episode with its remote URL. */

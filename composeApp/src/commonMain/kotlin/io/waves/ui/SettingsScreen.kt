@@ -197,16 +197,57 @@ private fun DiscoverSettings(state: SettingsState, settings: UserSettings) {
 
 @Composable
 private fun DownloadSettings(downloads: DownloadsState) {
-    val autoDelete by downloads.autoDeleteAfterFinishing.collectAsState()
+    val days by downloads.deleteAfterDays.collectAsState()
+    val usage by downloads.usage.collectAsState()
     SettingsGroup("Downloads") {
-        ToggleRow(
+        ChoiceRow(
             icon = Icons.Default.AutoDelete,
-            title = "Delete downloads after playing",
-            subtitle = null,
-            checked = autoDelete,
-            onChange = downloads::setAutoDeleteAfterFinishing,
+            title = "Delete after playing",
+            // What the downloads here take now.
+            subtitle = usageLabel(usage),
+            options = DeleteAfterDaysOptions,
+            selected = days,
+            selectedLabel = deleteAfterLabel(days),
+            label = ::deleteAfterOption,
+            onSelect = downloads::setDeleteAfterDays,
         )
     }
+}
+
+/** "No downloads", "1 download · 52 MB", "12 downloads · 1.4 GB". */
+internal fun usageLabel(usage: DownloadUsage): String = when (usage.count) {
+    0 -> "No downloads"
+    1 -> "1 download · ${formatBytes(usage.bytes)}"
+    else -> "${usage.count} downloads · ${formatBytes(usage.bytes)}"
+}
+
+/** Bytes in the largest unit that keeps them at 1 or more, one decimal below 10 (1000-based, as phones show storage). */
+internal fun formatBytes(bytes: Long): String {
+    val units = listOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.coerceAtLeast(0).toDouble()
+    var unit = 0
+    while (value >= 1000 && unit < units.lastIndex) {
+        value /= 1000
+        unit++
+    }
+    val shown = if (unit > 0 && value < 10) ((value * 10).toLong() / 10.0).toString() else value.toLong().toString()
+    return "$shown ${units[unit]}"
+}
+
+/** When a played episode's download goes: never, right away, or so many days later. */
+private val DeleteAfterDaysOptions = listOf(0, 3, 7, 15, UserSettings.NEVER)
+
+private fun deleteAfterLabel(days: Int): String = when (days) {
+    UserSettings.NEVER -> "Never"
+    0 -> "Right away"
+    else -> "${days}d"
+}
+
+private fun deleteAfterOption(days: Int): String = when (days) {
+    UserSettings.NEVER -> "Never"
+    0 -> "Right after playing"
+    1 -> "1 day after playing"
+    else -> "$days days after playing"
 }
 
 @Composable
