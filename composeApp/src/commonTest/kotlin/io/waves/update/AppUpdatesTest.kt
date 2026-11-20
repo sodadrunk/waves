@@ -33,7 +33,7 @@ class VersionTest {
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppUpdatesTest {
     private val releaseJson = """
-        {"tag_name":"v1.2.0","html_url":"https://github.com/CatInt/waves/releases/tag/v1.2.0","body":"Notes",
+        {"tag_name":"v1.2.0","html_url":"https://github.com/sodadrunk/waves/releases/tag/v1.2.0","body":"Notes",
          "draft":false,"prerelease":false,"assets":[
            {"name":"waves-1.2.0.apk","browser_download_url":"https://example.com/waves-1.2.0.apk","size":10},
            {"name":"Waves-1.2.0-arm64.dmg","browser_download_url":"https://example.com/Waves-1.2.0-arm64.dmg","size":20}]}
@@ -41,7 +41,7 @@ class AppUpdatesTest {
 
     private fun releases(status: HttpStatusCode = HttpStatusCode.OK, body: String = releaseJson) = GitHubReleases(
         HttpClient(MockEngine { req ->
-            assertEquals("/repos/CatInt/waves/releases/latest", req.url.encodedPath)
+            assertEquals("/repos/sodadrunk/waves/releases/latest", req.url.encodedPath)
             respond(body, status, headersOf(HttpHeaders.ContentType, "application/json"))
         }),
     )
@@ -70,14 +70,14 @@ class AppUpdatesTest {
     private fun rateLimited(latestRedirect: String) = GitHubReleases(
         HttpClient(MockEngine { req ->
             when (req.url.encodedPath) {
-                "/repos/CatInt/waves/releases/latest" -> respond("""{"message":"API rate limit exceeded"}""", HttpStatusCode.Forbidden)
-                "/CatInt/waves/releases/latest" -> respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, latestRedirect))
-                "/CatInt/waves/releases/tag/v1.3.0", "/CatInt/waves/releases" -> respond("")
-                "/CatInt/waves/releases/expanded_assets/v1.3.0" -> respond(
-                    """<a href="/CatInt/waves/releases/download/v1.3.0/Waves-1.3.0-arm64.dmg">dmg</a>
-                       <a href="/CatInt/waves/releases/download/v1.3.0/waves-1.3.0.apk">apk</a>
-                       <a href="/CatInt/waves/releases/download/v1.3.0/waves-1.3.0.apk" class="other">apk</a>
-                       <a href="/CatInt/waves/archive/refs/tags/v1.3.0.zip">Source code</a>""",
+                "/repos/sodadrunk/waves/releases/latest" -> respond("""{"message":"API rate limit exceeded"}""", HttpStatusCode.Forbidden)
+                "/sodadrunk/waves/releases/latest" -> respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, latestRedirect))
+                "/sodadrunk/waves/releases/tag/v1.3.0", "/sodadrunk/waves/releases" -> respond("")
+                "/sodadrunk/waves/releases/expanded_assets/v1.3.0" -> respond(
+                    """<a href="/sodadrunk/waves/releases/download/v1.3.0/Waves-1.3.0-arm64.dmg">dmg</a>
+                       <a href="/sodadrunk/waves/releases/download/v1.3.0/waves-1.3.0.apk">apk</a>
+                       <a href="/sodadrunk/waves/releases/download/v1.3.0/waves-1.3.0.apk" class="other">apk</a>
+                       <a href="/sodadrunk/waves/archive/refs/tags/v1.3.0.zip">Source code</a>""",
                 )
                 else -> error("Unexpected request ${req.method.value} ${req.url}")
             }
@@ -85,13 +85,24 @@ class AppUpdatesTest {
     )
 
     @Test
+    fun findsTheFilesOfARepositoryThatMoved() {
+        // Asked for under its old name, the assets page links the files under its new one.
+        val html = """<a href="/sodadrunk/waves/releases/download/v1.4.0/waves-1.4.0.apk">apk</a>
+            <a href="/sodadrunk/waves/archive/refs/tags/v1.4.0.zip">Source code</a>"""
+        assertEquals(
+            listOf(ReleaseAsset("waves-1.4.0.apk", "https://github.com/sodadrunk/waves/releases/download/v1.4.0/waves-1.4.0.apk", 0)),
+            GitHubReleases.parseAssetLinks(html, "CatInt/waves", "v1.4.0"),
+        )
+    }
+
+    @Test
     fun fallsBackToTheWebsiteWhenTheApiIsRateLimited() = runTest {
-        val release = rateLimited("https://github.com/CatInt/waves/releases/tag/v1.3.0").latest()!!
+        val release = rateLimited("https://github.com/sodadrunk/waves/releases/tag/v1.3.0").latest()!!
         assertEquals(Version(1, 3, 0), release.version)
         assertEquals(
             listOf(
-                ReleaseAsset("Waves-1.3.0-arm64.dmg", "https://github.com/CatInt/waves/releases/download/v1.3.0/Waves-1.3.0-arm64.dmg", 0),
-                ReleaseAsset("waves-1.3.0.apk", "https://github.com/CatInt/waves/releases/download/v1.3.0/waves-1.3.0.apk", 0),
+                ReleaseAsset("Waves-1.3.0-arm64.dmg", "https://github.com/sodadrunk/waves/releases/download/v1.3.0/Waves-1.3.0-arm64.dmg", 0),
+                ReleaseAsset("waves-1.3.0.apk", "https://github.com/sodadrunk/waves/releases/download/v1.3.0/waves-1.3.0.apk", 0),
             ),
             release.assets,
         )
@@ -99,7 +110,7 @@ class AppUpdatesTest {
 
     @Test
     fun websiteFallbackWithNoReleaseYetIsNotAnError() = runTest {
-        assertNull(rateLimited("https://github.com/CatInt/waves/releases").latest())
+        assertNull(rateLimited("https://github.com/sodadrunk/waves/releases").latest())
     }
 
     @Test

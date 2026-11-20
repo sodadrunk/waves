@@ -17,8 +17,11 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-/** GitHub repository whose releases carry the APK and DMG (see .github/workflows/release.yml). */
-const val RELEASES_REPO = "CatInt/waves"
+/**
+ * GitHub repository whose releases carry the APK and DMG (see .github/workflows/release.yml). It moved from
+ * CatInt/waves, which GitHub still redirects here.
+ */
+const val RELEASES_REPO = "sodadrunk/waves"
 
 /** MAJOR.MINOR.PATCH, the format of release tags (`v1.2.3`) and of [io.waves.BuildInfo.VERSION]. */
 data class Version(val major: Int, val minor: Int, val patch: Int) : Comparable<Version> {
@@ -96,8 +99,12 @@ class GitHubReleases(private val http: HttpClient, private val repo: String = RE
         private val json = Json { ignoreUnknownKeys = true }
         private val TAG_PATH = Regex("/releases/tag/([^/]+)$")
 
-        fun parseAssetLinks(html: String, repo: String, tag: String): List<ReleaseAsset> =
-            Regex("""href="(/${Regex.escape(repo)}/releases/download/${Regex.escape(tag)}/([^"/]+))"""")
+        /**
+         * The release's files linked from its assets page. Any owner and name in the links: a repository that moved is
+         * asked for under its old name and answers with links under its new one.
+         */
+        fun parseAssetLinks(html: String, @Suppress("UNUSED_PARAMETER") repo: String, tag: String): List<ReleaseAsset> =
+            Regex("""href="(/[^"/]+/[^"/]+/releases/download/${Regex.escape(tag)}/([^"/]+))"""")
                 .findAll(html)
                 .map { ReleaseAsset(name = it.groupValues[2], url = "https://github.com${it.groupValues[1]}", sizeBytes = 0) }
                 .distinctBy { it.name }

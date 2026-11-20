@@ -68,7 +68,7 @@ git tag v1.2.3 && git push origin v1.2.3
 
 `.github/workflows/release.yml` builds the signed APK (`waves-1.2.3.apk`) and the Apple Silicon DMG
 (`Waves-1.2.3-arm64.dmg`) and attaches them to a GitHub release. Release builds check
-`https://api.github.com/repos/CatInt/waves/releases/latest` a few seconds after launch and every 12 hours
+`https://api.github.com/repos/sodadrunk/waves/releases/latest` a few seconds after launch and every 12 hours
 (falling back to the release pages on github.com when the API is rate limited);
 **Settings → Updates** shows the result and installs the new version:
 
@@ -125,7 +125,7 @@ There is no warranty. The full text is in [LICENSE](LICENSE).
 
 The Android build includes [youtubedl-android](https://github.com/yausername/youtubedl-android)
 (GPL-3.0), which bundles Python and yt-dlp, so the app is distributed on these terms.
-Source for a release is the git tag that built it: `https://github.com/CatInt/waves`.
+Source for a release is the git tag that built it: `https://github.com/sodadrunk/waves`.
 
 ## Icons
 
