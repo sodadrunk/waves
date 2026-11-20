@@ -21,6 +21,8 @@ class PlaybackCacheTest {
     private class Recorder : DownloadManager {
         val cached = mutableListOf<EpisodeId>()
         val evictions = mutableListOf<Duration>()
+        var stops = 0
+        override suspend fun stopCaching() { stops++ }
         override val downloads: Flow<List<DownloadInfo>> = emptyFlow()
         override fun state(episodeId: EpisodeId): Flow<DownloadInfo?> = emptyFlow()
         override suspend fun enqueue(episode: Episode) {}
@@ -126,5 +128,13 @@ class PlaybackCacheTest {
         assertEquals(emptyList(), recorder.cached)
         advanceTimeBy(2_000)
         assertEquals(listOf(ep.id), recorder.cached)
+
+        // Off Wi-Fi mid-cache: it stops, and is asked for again after another minute back on Wi-Fi.
+        wifi.value = false
+        runCurrent()
+        assertEquals(1, recorder.stops)
+        wifi.value = true
+        advanceTimeBy(61_000)
+        assertEquals(listOf(ep.id, ep.id), recorder.cached)
     }
 }

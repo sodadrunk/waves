@@ -314,6 +314,11 @@ class KtorDownloadManager(
         }
     }
 
+    override suspend fun stopCaching() {
+        val running = activeLock.withLock { caching.values.toList() }
+        running.forEach { it.cancelAndJoin() }
+    }
+
     override suspend fun evictCache(notAccessedFor: Duration): Int {
         val busy = activeLock.withLock { caching.isNotEmpty() }
         return withContext(ioContext) {

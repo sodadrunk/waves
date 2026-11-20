@@ -51,6 +51,9 @@ interface DownloadManager {
      */
     suspend fun cache(episode: Episode) {}
 
+    /** Stops caching under way ([cache]); what was cached of it so far may be resumed by a later [cache]. */
+    suspend fun stopCaching() {}
+
     /** Deletes cached episodes not played (nor cached) within [notAccessedFor]. Returns how many were deleted. */
     suspend fun evictCache(notAccessedFor: Duration): Int = 0
 

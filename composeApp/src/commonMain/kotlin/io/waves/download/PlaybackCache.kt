@@ -52,12 +52,22 @@ class PlaybackCache(
                 }
             }
         }
+        var wasAllowed = false
         combine(playback, allowed) { state, ok -> state to ok }
             .distinctUntilChanged { (a, okA), (b, okB) ->
                 okA == okB && a.episode?.id == b.episode?.id && a.isPlaying == b.isPlaying && a.isLive == b.isLive
             }
             .collectLatest { (state, ok) ->
-                if (!ok) return@collectLatest
+                if (!ok) {
+                    // Not allowed any more: caching under way stops, and is asked for again when it is.
+                    if (wasAllowed) {
+                        wasAllowed = false
+                        withContext(NonCancellable) { downloads.stopCaching() }
+                        listened.entries.removeAll { it.value >= after.inWholeMilliseconds }
+                    }
+                    return@collectLatest
+                }
+                wasAllowed = true
                 // A live stream has no file to cache.
                 val episode = state.episode?.takeIf { state.isPlaying && !state.isLive } ?: return@collectLatest
                 val id = episode.id
