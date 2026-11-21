@@ -253,6 +253,24 @@ class DownloadsStateTest {
     }
 
     @Test
+    fun switchingToRightAwayTakesTheLoadedEpisodeOnceItIsLetGo() = runTest {
+        val m = InMemoryDownloadManager(backgroundScope, stepMs = 100, steps = 10, clock = { testScheduler.currentTime })
+        val store = InMemorySettingsStore(UserSettings().withDeleteAfterDays(7))
+        val state = DownloadsState(m, library, playback, backgroundScope, store, clock = { testScheduler.currentTime })
+        state.download(ep1)
+        settle()
+        playback.value = PlaybackState(ep1, isPlaying = false)
+        library.saveProgress(PlaybackProgress(ep1.id, 600_000, 600_000, true, testScheduler.currentTime))
+        settle()
+        state.setDeleteAfterDays(0)
+        settle()
+        assertNotNull(m.localUri(ep1.id), "kept while loaded")
+        playback.value = PlaybackState(ep2, isPlaying = true)
+        settle()
+        assertNull(m.localUri(ep1.id), "gone once the player moved on")
+    }
+
+    @Test
     fun onlyRightAwayTurnsTheEarlierToggleOn() {
         assertTrue(UserSettings().withDeleteAfterDays(0).autoDeleteDownloads)
         assertFalse(UserSettings().withDeleteAfterDays(15).autoDeleteDownloads)

@@ -88,4 +88,18 @@ class HlsMasterTest {
         """.trimIndent()
         assertEquals("https://m.example/en.m3u8", HlsMaster.audioOnly(master, "https://m.example/master.m3u8"))
     }
+
+    @Test
+    fun aacLcBeatsALowerTrackMarkedDefault() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="233",NAME="Default",DEFAULT=YES,URI="https://m.example/233.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="234",NAME="Default",DEFAULT=NO,URI="https://m.example/234.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=100000,CODECS="mp4a.40.5",AUDIO="233"
+            https://m.example/v1.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="mp4a.40.2",AUDIO="234"
+            https://m.example/v2.m3u8
+        """.trimIndent()
+        assertEquals("https://m.example/234.m3u8", HlsMaster.audioOnly(master, "https://m.example/master.m3u8"))
+    }
 }

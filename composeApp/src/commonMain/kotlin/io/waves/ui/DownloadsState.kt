@@ -170,7 +170,8 @@ class DownloadsState(
             combine(deleteAfterDays, offline) { days, off -> days.takeUnless { off } }.collectLatest { days ->
                 when {
                     days == null || days < 0 -> Unit
-                    days == 0 -> guarded { deletePlayedBefore(Long.MAX_VALUE) }
+                    // And again as the player lets an episode go: the one loaded was spared.
+                    days == 0 -> activeEpisode.collect { guarded { deletePlayedBefore(Long.MAX_VALUE) } }
                     else -> while (true) {
                         guarded { deletePlayedBefore(clock() - days.days.inWholeMilliseconds) }
                         delay(laterDeleteEvery)

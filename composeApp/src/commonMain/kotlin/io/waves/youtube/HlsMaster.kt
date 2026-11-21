@@ -15,15 +15,11 @@ internal object HlsMaster {
         val variants = variants(master)
         return tags(master, "#EXT-X-MEDIA:")
             .filter { it["TYPE"] == "AUDIO" && !it["URI"].isNullOrEmpty() }
-            // The original audio before a dub, then AAC-LC.
+            // The original audio before a dub, then AAC-LC, then what the stream plays by default.
             .maxWithOrNull(
-                compareBy<Map<String, String>> { audio ->
-                    when {
-                        "original" in audio["NAME"].orEmpty().lowercase() -> 2
-                        audio["DEFAULT"] == "YES" -> 1
-                        else -> 0
-                    }
-                }.thenBy { audio -> if (variants.any { it.audioGroup == audio["GROUP-ID"] && "mp4a.40.2" in it.codecs }) 1 else 0 },
+                compareBy<Map<String, String>> { audio -> "original" in audio["NAME"].orEmpty().lowercase() }
+                    .thenBy { audio -> variants.any { it.audioGroup == audio["GROUP-ID"] && "mp4a.40.2" in it.codecs } }
+                    .thenBy { audio -> audio["DEFAULT"] == "YES" },
             )
             ?.let { resolve(it.getValue("URI"), masterUrl) }
     }

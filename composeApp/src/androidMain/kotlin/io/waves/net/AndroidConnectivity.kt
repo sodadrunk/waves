@@ -50,19 +50,35 @@ private fun NetworkCapabilities.reachesInternet() =
         hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
 
 /**
- * Whether the network the app goes out on is Wi-Fi or a cable that isn't metered, rather than mobile data or a
- * phone's hotspot. Followed through the default network, which is the one in use; true until told otherwise.
+ * Whether the device is on Wi-Fi or a cable that isn't metered, rather than mobile data or a phone's hotspot. Judged
+ * by the physical networks, as [androidOnline] is: a VPN on top is the default network, and most VPNs count as metered
+ * whatever carries them, so home Wi-Fi under a VPN would read as mobile data. Android sends traffic over such a Wi-Fi
+ * when it's there. True until told otherwise.
  */
 fun androidUnmetered(context: Context, scope: CoroutineScope): StateFlow<Boolean> {
     val manager = context.getSystemService(ConnectivityManager::class.java)
-    val initially = manager.activeNetwork?.let(manager::getNetworkCapabilities)?.isUnmetered() ?: true
+    val request = NetworkRequest.Builder()
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        .build()
+    @Suppress("DEPRECATION")
+    val initially = manager.allNetworks.mapNotNull(manager::getNetworkCapabilities)
+        .filter { it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) }
+        .let { physical -> physical.isEmpty() || physical.any { it.isUnmetered() } }
     return callbackFlow {
+        val unmetered = ConcurrentHashMap<Network, Boolean>()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                trySend(capabilities.isUnmetered())
+                unmetered[network] = capabilities.isUnmetered()
+                trySend(unmetered.values.any { it })
+            }
+
+            override fun onLost(network: Network) {
+                unmetered.remove(network)
+                trySend(unmetered.values.any { it })
             }
         }
-        manager.registerDefaultNetworkCallback(callback)
+        manager.registerNetworkCallback(request, callback)
         awaitClose { manager.unregisterNetworkCallback(callback) }
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, initially)
 }
