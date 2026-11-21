@@ -2,6 +2,9 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.time.Duration
 import java.util.Properties
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -318,4 +321,37 @@ tasks.named<Test>("desktopTest") {
     // keyboard from whatever app is in front, each run. The first is AWT's, the second JavaFX's.
     systemProperty("apple.awt.UIElement", "true")
     systemProperty("glass.taskbarApplication", "false")
+}
+
+// The Mac app runs on Apple silicon only (its runtime, Skiko and JavaFX are arm64): the libraries' native code for
+// other systems (SQLite's for some thirty, JNA's for as many) is dropped from the shrunk jars it's packaged from.
+tasks.matching { it.name == "proguardReleaseJars" }.configureEach {
+    doLast {
+        outputs.files.asFileTree.matching { include("**/*.jar") }.forEach(::keepMacArmNativesOnly)
+    }
+}
+
+/** Rewrites [jar] without the native libraries of systems other than arm64 macOS, if it holds any. */
+fun keepMacArmNativesOnly(jar: File) {
+    val jnaNative = Regex("""com/sun/jna/([^/]+)/[^/]*jnidispatch[^/]*""")
+    fun foreign(name: String): Boolean = when {
+        name.startsWith("org/sqlite/native/") && !name.endsWith("/") -> !name.startsWith("org/sqlite/native/Mac/aarch64/")
+        else -> jnaNative.matchEntire(name)?.let { it.groupValues[1] != "darwin-aarch64" } ?: false
+    }
+    val kept = ZipFile(jar).use { zip ->
+        val entries = zip.entries().toList()
+        if (entries.none { foreign(it.name) }) return
+        val out = File(jar.path + ".tmp")
+        ZipOutputStream(out.outputStream().buffered()).use { zos ->
+            for (entry in entries) {
+                if (foreign(entry.name)) continue
+                zos.putNextEntry(ZipEntry(entry.name).apply { time = entry.time })
+                zip.getInputStream(entry).use { it.copyTo(zos) }
+                zos.closeEntry()
+            }
+        }
+        out
+    }
+    jar.delete()
+    kept.renameTo(jar)
 }
