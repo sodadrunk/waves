@@ -348,8 +348,14 @@ internal fun PlayerSheet(
             }
 
             val colors = MaterialTheme.colorScheme
-            // Kept composed (invisible) while collapsed so a drag never waits on building the full player.
-            val showFull = episode != null || expanded
+            // Kept composed (invisible) while collapsed so a drag never waits on building the full player, but only
+            // once a cold start has put the rest up.
+            var warmed by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                delay(PLAYER_WARM_AFTER_MS)
+                warmed = true
+            }
+            val showFull = (episode != null && warmed) || expanded
             val fullReadable by remember { derivedStateOf { sheet.value >= 0.5f } }
             var contentOrigin by remember { mutableStateOf(Offset.Zero) }
             var artOrigin by remember { mutableStateOf(Offset.Unspecified) }
@@ -584,3 +590,6 @@ private fun MiniPlayerBar(
         }
     }
 }
+
+/** How long after start the collapsed sheet builds the full player behind it. */
+private const val PLAYER_WARM_AFTER_MS = 2_500L

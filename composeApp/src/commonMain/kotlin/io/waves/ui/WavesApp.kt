@@ -148,6 +148,11 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         liveNow = { channelId -> deps.youtube?.liveNow(channelId).orEmpty() },
         scope = scope,
         offline = deps.offline,
+        // Once Home has its rows up and a moment more: answers landing while they ease in would make them stutter.
+        startAfter = {
+            home.state.first { it.loaded }
+            delay(STARTUP_SETTLE_MS)
+        },
     )
     val history = HistoryState(
         deps.library, scope, downloads = deps.downloads?.downloads ?: flowOf(emptyList()), onLocalChange = deps.onLocalChange,
@@ -337,6 +342,13 @@ private fun CurrentScreen(
                 .graphicsLayer { alpha = if (covered) 0f else 1f }
                 .then(if (covered) Modifier.clearAndSetSemantics {} else Modifier),
         ) {
+            // Set once Home has its rows up and a moment has passed: offscreen work waits until then.
+            var settled by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                app.home.state.first { it.loaded }
+                delay(STARTUP_SETTLE_MS)
+                settled = true
+            }
             HorizontalPager(
                 state = pager,
                 modifier = Modifier.fillMaxSize()
@@ -353,7 +365,9 @@ private fun CurrentScreen(
                         }
                     },
                 ),
-                beyondViewportPageCount = 1,
+                // The neighbouring tab composed ahead, to swipe to without a wait, but not during a cold start,
+                // which has the visible one to put up first.
+                beyondViewportPageCount = if (settled) 1 else 0,
                 key = { Tab.entries[it] },
             ) { index ->
                 val tab = Tab.entries[index]
@@ -599,3 +613,6 @@ private suspend fun youtubeCreatorShows(show: Podcast, youtube: YoutubeChannels,
     // Shows already stored (followed, or opened before) as the library has them.
     return youtube.channelShows(channel, archive).map { library.podcast(it.feedUrl) ?: it }
 }
+
+/** How long after Home has its rows a cold start holds back work that isn't on screen. */
+internal const val STARTUP_SETTLE_MS = 1_500L

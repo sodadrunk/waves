@@ -40,6 +40,8 @@ class LiveNowState(
     private val scope: CoroutineScope,
     private val offline: StateFlow<Boolean> = MutableStateFlow(false),
     private val parallelism: Int = 4,
+    /** Waited for before the first look: a cold start has the screen to put up first. */
+    private val startAfter: suspend () -> Unit = {},
 ) {
     private val _items = MutableStateFlow<List<LiveNowItem>>(emptyList())
     val items: StateFlow<List<LiveNowItem>> = _items.asStateFlow()
@@ -55,6 +57,7 @@ class LiveNowState(
 
     init {
         scope.launch {
+            startAfter()
             combine(channels, offline, asked) { followed, off, _ -> followed.takeIf { !off } }.collectLatest { followed ->
                 if (followed == null) {
                     _items.value = emptyList()

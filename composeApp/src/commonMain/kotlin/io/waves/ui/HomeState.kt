@@ -97,7 +97,8 @@ class HomeState(
     private var shownOrder: List<EpisodeId> = emptyList()
     private var shownEpoch = -1
 
-    private class Ranked(
+    // Data, so a ranking worked out again with the same result isn't taken for a new one (and the rows aren't redrawn).
+    private data class Ranked(
         val subscriptions: List<Podcast>,
         val shelf: List<Podcast>,
         val upNext: List<UpNextItem>,

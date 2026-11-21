@@ -13,6 +13,8 @@ import io.waves.feed.FeedFetchException
 import io.waves.model.Episode
 import io.waves.model.Podcast
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
@@ -129,7 +131,8 @@ class YoutubeChannels(private val client: HttpClient) {
      */
     suspend fun liveNow(channelId: String): List<Episode> {
         val tab = tab(channelId, LIVE_TAB_PARAMS) ?: throw YoutubeException("YouTube didn't say what's on air")
-        return parseListedVideos(tab).filter { it.live }.map { video ->
+        val listed = withContext(Dispatchers.Default) { parseListedVideos(tab) }
+        return listed.filter { it.live }.map { video ->
             Episode(
                 guid = video.id,
                 podcastFeedUrl = YoutubeUrls.liveArchiveFeedUrl(channelId),
@@ -297,7 +300,8 @@ class YoutubeChannels(private val client: HttpClient) {
         } catch (e: Exception) {
             return null
         }
-        return jsonObject(text)
+        // A tab's answer is hundreds of kilobytes of JSON: not read on the caller's thread, which may be the UI's.
+        return withContext(Dispatchers.Default) { jsonObject(text) }
     }
 
     /**
