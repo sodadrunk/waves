@@ -6,6 +6,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.http.isSuccess
 import io.waves.ui.UpdateState
 import io.waves.ui.UpdateStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -41,8 +42,9 @@ class AppUpdatesTest {
 
     private fun releases(status: HttpStatusCode = HttpStatusCode.OK, body: String = releaseJson) = GitHubReleases(
         HttpClient(MockEngine { req ->
-            assertEquals("/repos/sodadrunk/waves/releases/latest", req.url.encodedPath)
-            respond(body, status, headersOf(HttpHeaders.ContentType, "application/json"))
+            // The API, else (when it fails) the website, which fails the same way here.
+            if (req.url.encodedPath != "/repos/sodadrunk/waves/releases/latest") respond("", if (status.isSuccess()) HttpStatusCode.InternalServerError else status)
+            else respond(body, status, headersOf(HttpHeaders.ContentType, "application/json"))
         }),
     )
 

@@ -13,6 +13,7 @@ import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
 import kotlin.time.Duration.Companion.minutes
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -50,11 +51,15 @@ class GitHubReleases(private val http: HttpClient, private val repo: String = RE
     /** Null when the repository has no usable release yet. */
     suspend fun latest(): AppRelease? {
         // Kept half an hour ([ResponseCache]): checking again right away needn't ask GitHub, which caps anonymous calls.
+        // Not the kept one once that's older, even when the API won't answer: the release it names may be the one
+        // this app is (it never found newer ones while GitHub's cap was used up). The website answers instead.
         val body = try {
-            ResponseCache.text("github latest $repo", 30.minutes) { latestBody() }
+            ResponseCache.text("github latest $repo", 30.minutes, staleOnError = false) { latestBody() }
         } catch (e: NoRelease) {
             return null
-        } catch (e: RateLimited) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             return latestFromWebsite()
         }
         return parseRelease(body)
