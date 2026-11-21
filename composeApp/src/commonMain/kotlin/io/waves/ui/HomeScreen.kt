@@ -122,6 +122,9 @@ fun HomeScreen(
                         if (list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0) list.requestScrollToItem(0)
                         SideEffect { shownFirst.value = firstKey }
                     }
+                    val skeleton = !ui.loaded && ui.upNext.isEmpty() && live.isEmpty() && ui.error == null
+                    // One clock for all the outline rows, and none once the list is read.
+                    val skeletonClock = if (skeleton) rememberSkeletonClock() else null
                     LazyColumn(
                         Modifier.fillMaxSize()
                             // Under the shelf, rows scrolling up end at its divider's line instead of fading out. On
@@ -145,14 +148,21 @@ fun HomeScreen(
                                 )
                             }
                         }
-                        // Until the library has been read, nothing: rows ease in once it has, without a "loading" line
-                        // flashing first on every launch.
-                        if (ui.upNext.isEmpty() && live.isEmpty() && (ui.loaded || ui.refreshing)) {
+                        // A cold start: until the library has been read, outlines of rows, which only show if that
+                        // takes a moment (no flash on a quick one); the real rows fade in as they go.
+                        if (skeleton) {
+                            items(SkeletonRows, key = { "skeleton $it" }) { index ->
+                                EpisodeSkeleton(index, divider = index > 0, clock = skeletonClock!!, modifier = Modifier.animateItem(fadeOutSpec = null))
+                            }
+                        }
+                        // Until the library has been read, no status line: rows ease in once it has, without a
+                        // "loading" line flashing first on every launch.
+                        if (ui.upNext.isEmpty() && live.isEmpty() && ui.loaded) {
                             item(key = "status") {
                                 Text(
                                     when {
                                         ui.offline && ui.loaded && !ui.refreshing -> "No downloaded or fully cached episodes."
-                                        !ui.loaded || ui.refreshing -> "Loading episodes…"
+                                        ui.refreshing -> "Loading episodes…"
                                         !ui.hasEpisodes -> "Pull down to load the latest episodes."
                                         else -> "You're all caught up."
                                     },
