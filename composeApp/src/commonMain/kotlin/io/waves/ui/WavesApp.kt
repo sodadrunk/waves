@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF3D8BD4), onPrimary = Color.White,
@@ -150,7 +151,7 @@ class AppState(deps: AppDependencies, scope: kotlinx.coroutines.CoroutineScope) 
         offline = deps.offline,
         // Once Home has its rows up and a moment more: answers landing while they ease in would make them stutter.
         startAfter = {
-            home.state.first { it.loaded }
+            withTimeoutOrNull(STARTUP_WAIT_MS) { home.state.first { it.loaded } }
             delay(STARTUP_SETTLE_MS)
         },
     )
@@ -345,7 +346,7 @@ private fun CurrentScreen(
             // Set once Home has its rows up and a moment has passed: offscreen work waits until then.
             var settled by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
-                app.home.state.first { it.loaded }
+                withTimeoutOrNull(STARTUP_WAIT_MS) { app.home.state.first { it.loaded } }
                 delay(STARTUP_SETTLE_MS)
                 settled = true
             }
@@ -616,3 +617,6 @@ private suspend fun youtubeCreatorShows(show: Podcast, youtube: YoutubeChannels,
 
 /** How long after Home has its rows a cold start holds back work that isn't on screen. */
 internal const val STARTUP_SETTLE_MS = 1_500L
+
+/** The longest that work waits for Home to have its rows: it goes ahead even if they never come. */
+internal const val STARTUP_WAIT_MS = 10_000L

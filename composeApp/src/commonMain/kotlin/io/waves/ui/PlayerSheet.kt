@@ -355,7 +355,8 @@ internal fun PlayerSheet(
                 delay(PLAYER_WARM_AFTER_MS)
                 warmed = true
             }
-            val showFull = (episode != null && warmed) || expanded
+            // A drag up starts building it at once, warmed or not.
+            val showFull = (episode != null && (warmed || !collapsed)) || expanded
             val fullReadable by remember { derivedStateOf { sheet.value >= 0.5f } }
             var contentOrigin by remember { mutableStateOf(Offset.Zero) }
             var artOrigin by remember { mutableStateOf(Offset.Unspecified) }

@@ -11,9 +11,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * What the app runs at start and on its main screens, for the baseline profile: a cold start to Home, then a pass
- * through the tabs. The first run also follows the top show in Discover's charts, so Home has episode rows to draw
- * (the `.benchmark` build starts with an empty library).
+ * What the app runs at start and on its main screens, for the baseline profile: a cold start to Home, which alone
+ * also makes the startup profile (it decides what's laid out first in the app's code), then a pass through the tabs.
+ * The tour follows the top show in Discover's charts when the library is empty (the `.benchmark` build starts so), so
+ * Home has episode rows to draw.
  */
 @RunWith(AndroidJUnit4::class)
 class BaselineProfileGenerator {
@@ -21,7 +22,15 @@ class BaselineProfileGenerator {
     val rule = BaselineProfileRule()
 
     @Test
-    fun generate() = rule.collect(packageName = PACKAGE, includeInStartupProfile = true) {
+    fun startup() = rule.collect(packageName = PACKAGE, includeInStartupProfile = true) {
+        pressHome()
+        startActivityAndWait()
+        device.wait(Until.hasObject(By.text("Home")), TIMEOUT)
+        device.wait(Until.hasObject(By.textContains("min")), TIMEOUT) // the rows in
+    }
+
+    @Test
+    fun tour() = rule.collect(packageName = PACKAGE, includeInStartupProfile = false) {
         pressHome()
         startActivityAndWait()
         device.wait(Until.hasObject(By.text("Home")), TIMEOUT)
