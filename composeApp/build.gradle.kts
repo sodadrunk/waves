@@ -224,6 +224,9 @@ android {
             applicationIdSuffix = ".debug"
         }
         getByName("release") {
+            // 64-bit ARM only: what phones run, and Apple-silicon emulators. yt-dlp's Python takes 14 MB per ABI,
+            // so the other three were most of the APK. Debug builds keep every ABI.
+            ndk { abiFilters += "arm64-v8a" }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
