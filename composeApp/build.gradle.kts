@@ -10,6 +10,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.sqldelight)
+    alias(libs.plugins.baselineprofile)
 }
 
 // Google OAuth "Desktop app" client for Drive sync, read from local.properties (never committed) or
@@ -104,6 +105,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.work.runtime)
             implementation(libs.youtubedl.android)
+            // Compiles the baseline profile (the app's and its libraries') on install, sideloaded too.
+            implementation(libs.profileinstaller)
         }
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
@@ -233,7 +236,25 @@ android {
     }
     dependencies {
         debugImplementation(libs.compose.ui.tooling)
+        // What runs at start and on the main screens, compiled ahead: `./gradlew :composeApp:generateBaselineProfile`
+        // with a device connected (see baselineprofile/).
+        "baselineProfile"(project(":baselineprofile"))
     }
+}
+
+// The builds the profile is made and measured with (the baseline profile plugin adds them) install beside the real
+// app, not over it.
+androidComponents {
+    onVariants { variant ->
+        val type = variant.buildType.orEmpty()
+        if (type.startsWith("nonMinified") || type.startsWith("benchmark")) variant.applicationId.set("io.waves.benchmark")
+    }
+}
+
+baselineProfile {
+    // Made by hand on a device, then kept in the sources: a build doesn't need one.
+    automaticGenerationDuringBuild = false
+    saveInSrc = true
 }
 
 // macOS app: `./gradlew :composeApp:run`, or `:composeApp:packageDmg` for a .dmg
